@@ -163,6 +163,18 @@ enum AppLanguage: String, CaseIterable, Equatable {
         case (.english, .quit): "Quit PinSticky"
         case (.korean, .closeNote): "메모 닫기"
         case (.english, .closeNote): "Close Note"
+        case (.korean, .closeAllNotes): "모든 메모 닫기"
+        case (.english, .closeAllNotes): "Close All Notes"
+        case (.korean, .closeAllNotesConfirmation): "모든 창을 닫으시겠습니까?"
+        case (.english, .closeAllNotesConfirmation): "Close all note windows?"
+        case (.korean, .clearAllAttachments): "모든 메모 종속 제거"
+        case (.english, .clearAllAttachments): "Clear All App Attachments"
+        case (.korean, .clearAllAttachmentsConfirmation): "모든 메모의 종속을 제거하시겠습니까?"
+        case (.english, .clearAllAttachmentsConfirmation): "Clear app attachments from all notes?"
+        case (.korean, .yes): "네"
+        case (.english, .yes): "Yes"
+        case (.korean, .no): "아니요"
+        case (.english, .no): "No"
         case (.korean, .language): "언어"
         case (.english, .language): "Language"
         case (.korean, .pinMenu): "앱 종속"
@@ -248,6 +260,12 @@ enum AppText {
     case nextTheme
     case quit
     case closeNote
+    case closeAllNotes
+    case closeAllNotesConfirmation
+    case clearAllAttachments
+    case clearAllAttachmentsConfirmation
+    case yes
+    case no
     case language
     case pinMenu
     case currentMode

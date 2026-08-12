@@ -18,6 +18,7 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
     private var noteObserver: AnyCancellable?
     private var isApplyingTransition = false
     private var isRefreshingVisibility = false
+    private var isManuallyHidden = false
     private var isVisible = false
     private var presentationSnapshot: PresentationSnapshot
     private let overlapState = NoteOverlapState()
@@ -44,6 +45,16 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
         window.noteMouseDownHandler = { [weak self] in
             self?.selectAndBringToFront()
         }
+        window.noteShortcutHandler = { [weak self] shortcut in
+            guard let self else { return false }
+            switch shortcut {
+            case .closeNote:
+                self.hide()
+                return true
+            default:
+                return false
+            }
+        }
         noteObserver = store.$note.sink { [weak self] note in
             guard let self, !self.isApplyingTransition else { return }
             self.applyPresentationChangeIfNeeded(note)
@@ -51,13 +62,24 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
         applyContent()
     }
 
-    func show(forceVisible: Bool = false) {
+    func show(forceVisible: Bool = false, resetManualHidden: Bool = true) {
+        if resetManualHidden {
+            isManuallyHidden = false
+        }
         applyContent()
         if forceVisible {
-            showWindow(animated: false)
+            if !isManuallyHidden {
+                showWindow(animated: false)
+            }
         } else {
             refreshVisibilityWithCurrentContext()
         }
+    }
+
+    func revealIfHiddenByAttachment() {
+        guard !isManuallyHidden else { return }
+        applyContent()
+        showWindow(animated: false)
     }
 
     func toggleCollapsed() {
@@ -93,6 +115,12 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
         visibleBundleIdentifiers: Set<String> = []
     ) {
         guard !isRefreshingVisibility else { return }
+        guard !isManuallyHidden else {
+            if window.isVisible {
+                hideWindow(animated: false)
+            }
+            return
+        }
         isRefreshingVisibility = true
         defer { isRefreshingVisibility = false }
 
@@ -153,6 +181,10 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
         return window.frame
     }
 
+    var isUserHidden: Bool {
+        isManuallyHidden
+    }
+
     private func selectAndBringToFront() {
         activateNote(store.note.id)
         bringToFront()
@@ -165,14 +197,14 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
             let dotOrigin = placementManager.clampedDotOrigin(store.note.collapsedOrigin.cgPoint)
             window.applyCollapsedStyle()
             setFrame(CGRect(origin: dotOrigin, size: CGSize(width: 28, height: 28)), animated: animated, isCollapsing: true)
-            window.contentView = ClearHostingView(rootView: DotView(store: store, overlapState: overlapState) { [weak self] in
+            window.contentView = ClearHostingView(allowsTransparentTopHitTesting: true, rootView: DotView(store: store, overlapState: overlapState) { [weak self] in
                 self?.toggleCollapsed()
             })
         } else {
             let frame = placementManager.clampedFrame(store.note.expandedFrame.cgRect)
             window.applyExpandedStyle()
             setFrame(Self.windowFrame(forNoteFrame: frame), animated: animated, isCollapsing: false)
-            window.contentView = ClearHostingView(rootView: NoteView(
+            window.contentView = ClearHostingView(allowsTransparentTopHitTesting: false, rootView: NoteView(
                 store: store,
                 overlapState: overlapState,
                 newNote: newNote,
@@ -327,6 +359,7 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
 
     func hide() {
         captureCurrentFrame()
+        isManuallyHidden = true
         isVisible = false
         window.orderOut(nil)
     }
@@ -403,7 +436,16 @@ private struct PresentationSnapshot: Equatable {
 }
 
 private final class ClearHostingView<Content: View>: NSHostingView<Content> {
+    private let allowsTransparentTopHitTesting: Bool
+
     required init(rootView: Content) {
+        self.allowsTransparentTopHitTesting = true
+        super.init(rootView: rootView)
+        configureClearLayer()
+    }
+
+    init(allowsTransparentTopHitTesting: Bool = true, rootView: Content) {
+        self.allowsTransparentTopHitTesting = allowsTransparentTopHitTesting
         super.init(rootView: rootView)
         configureClearLayer()
     }
@@ -430,6 +472,24 @@ private final class ClearHostingView<Content: View>: NSHostingView<Content> {
         layer?.isOpaque = false
     }
 
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard !allowsTransparentTopHitTesting else {
+            return super.hitTest(point)
+        }
+
+        let noteTopY = max(0, bounds.height - NoteView.toolbarHeight)
+        if point.y > noteTopY {
+            return super.hitTest(point).flatMap { hitView in
+                guard isLikelyToolbarHit(hitView) else {
+                    return nil
+                }
+                return hitView
+            }
+        }
+
+        return super.hitTest(point)
+    }
+
     private func configureClearLayer() {
         wantsLayer = true
         layer?.backgroundColor = NSColor.clear.cgColor
@@ -437,4 +497,20 @@ private final class ClearHostingView<Content: View>: NSHostingView<Content> {
     }
 
     override func draw(_ dirtyRect: NSRect) {}
+
+    private func isLikelyToolbarHit(_ view: NSView) -> Bool {
+        guard view !== self else {
+            return false
+        }
+
+        var current: NSView? = view
+        while let candidate = current, candidate !== self {
+            if NSStringFromClass(type(of: candidate)).contains("Button")
+                || NSStringFromClass(type(of: candidate)).contains("Menu") {
+                return true
+            }
+            current = candidate.superview
+        }
+        return false
+    }
 }

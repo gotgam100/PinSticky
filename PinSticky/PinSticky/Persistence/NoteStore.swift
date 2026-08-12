@@ -26,6 +26,7 @@ final class NoteStore: ObservableObject {
 
     let fileURL: URL
     private var pendingSave: Task<Void, Never>?
+    private var isDeleted = false
 
     init(note: StickerNote, fileURL: URL) {
         language = Self.savedLanguage()
@@ -323,24 +324,33 @@ final class NoteStore: ObservableObject {
     }
 
     func flush() {
+        guard !isDeleted else { return }
         pendingSave?.cancel()
         save()
     }
 
     func deleteFile() {
+        isDeleted = true
         pendingSave?.cancel()
         try? FileManager.default.removeItem(at: fileURL)
     }
 
     private func scheduleSave() {
+        guard !isDeleted else { return }
         pendingSave?.cancel()
         pendingSave = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(220))
+            do {
+                try await Task.sleep(for: .milliseconds(220))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
             self?.save()
         }
     }
 
     private func save() {
+        guard !isDeleted else { return }
         guard let data = try? JSONEncoder.pinSticky.encode(note) else { return }
         try? data.write(to: fileURL, options: .atomic)
     }

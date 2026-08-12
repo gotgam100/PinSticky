@@ -2,6 +2,7 @@ import AppKit
 
 final class StickerNoteWindow: NSPanel {
     var noteMouseDownHandler: (() -> Void)?
+    var noteShortcutHandler: ((PinStickyShortcutKey) -> Bool)?
 
     private static let expandedStyleMask: NSWindow.StyleMask = [.titled, .resizable, .fullSizeContentView]
 
@@ -39,6 +40,11 @@ final class StickerNoteWindow: NSPanel {
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if routeStandardTextShortcut(event) {
+            return true
+        }
+        if event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+           let shortcut = event.pinStickyShortcutKey,
+           noteShortcutHandler?(shortcut) == true {
             return true
         }
         return super.performKeyEquivalent(with: event)

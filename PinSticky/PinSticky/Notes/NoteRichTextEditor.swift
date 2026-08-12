@@ -344,6 +344,8 @@ final class ContextMenuTextView: NSTextView {
         case .selectAll:
             selectAll(nil)
             return true
+        case .closeNote:
+            return (window as? StickerNoteWindow)?.noteShortcutHandler?(.closeNote) == true
         default:
             return false
         }

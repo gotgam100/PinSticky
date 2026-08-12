@@ -50,11 +50,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func showNote() {
+        guard hasOpenNoteWindow else {
+            isShowingAllNotesUntilAppSwitch = false
+            return
+        }
+
         isShowingAllNotesUntilAppSwitch = true
         NSApp.activate()
-        showAllNotes(forceVisible: true)
+        temporarilyRevealAttachmentHiddenNotes()
         DispatchQueue.main.async { [weak self] in
-            self?.showAllNotes(forceVisible: true)
+            self?.temporarilyRevealAttachmentHiddenNotes()
         }
     }
 
@@ -101,6 +106,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func closeNote() {
         activeController?.hide()
+    }
+
+    @objc private func closeAllNotes() {
+        guard confirm(message: language.text(.closeAllNotesConfirmation)) else { return }
+        isShowingAllNotesUntilAppSwitch = false
+        noteWindowControllers.values.forEach { $0.hide() }
+        refreshOverlapOutlines()
+    }
+
+    @objc private func clearAllAttachments() {
+        let activeControllers = noteWindowControllers.values.filter { !$0.isUserHidden }
+        guard !activeControllers.isEmpty else { return }
+        guard confirm(message: language.text(.clearAllAttachmentsConfirmation)) else { return }
+        activeControllers.forEach { $0.store.setAlwaysVisible() }
+        refreshNoteVisibilityForVisibleApps()
     }
 
     @objc private func quit() {
@@ -191,8 +211,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(statusMenuItem(title: language.text(.collapseExpand), action: #selector(toggleCollapse), keyEquivalent: "d"))
         menu.addItem(statusMenuItem(title: language.text(.nextTheme), action: #selector(cycleTheme), keyEquivalent: "t"))
         menu.addItem(statusMenuItem(title: language.text(.closeNote), action: #selector(closeNote), keyEquivalent: "w"))
+        menu.addItem(statusMenuItem(title: language.text(.closeAllNotes), action: #selector(closeAllNotes)))
         menu.addItem(.separator())
         menu.addItem(statusMenuItem(title: language.text(.settings), action: #selector(showSettings), keyEquivalent: ","))
+        menu.addItem(statusMenuItem(title: language.text(.clearAllAttachments), action: #selector(clearAllAttachments)))
         menu.addItem(statusMenuItem(title: language.text(.restoreDeletedNotes), action: #selector(showDeletedNotesRestore)))
         menu.addItem(.separator())
         menu.addItem(statusMenuItem(title: language.text(.quit), action: #selector(quit), keyEquivalent: "q"))
@@ -202,12 +224,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showAllNotes(forceVisible: Bool = false, activateShownNotes: Bool = true) {
+        pruneControllersWithoutStores()
         stores.forEach { show(store: $0, forceVisible: forceVisible, activateShownNote: activateShownNotes) }
+    }
+
+    private func temporarilyRevealAttachmentHiddenNotes() {
+        pruneControllersWithoutStores()
+        guard hasOpenNoteWindow else {
+            isShowingAllNotesUntilAppSwitch = false
+            return
+        }
+
+        stores.forEach { store in
+            show(store: store, activateShownNote: false, resetManualHidden: false)
+            noteWindowControllers[store.note.id]?.revealIfHiddenByAttachment()
+        }
+        refreshOverlapOutlines()
+    }
+
+    private var hasOpenNoteWindow: Bool {
+        noteWindowControllers.values.contains { $0.visibleFrame != nil }
     }
 
     private func refreshNoteVisibilityForVisibleApps() {
         guard !isShowingAllNotesUntilAppSwitch else {
-            showAllNotes(forceVisible: true, activateShownNotes: false)
+            temporarilyRevealAttachmentHiddenNotes()
             refreshOverlapOutlines()
             return
         }
@@ -247,7 +288,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return (bundleIdentifier, visibleExternalBundleIdentifiers())
     }
 
-    private func show(store: NoteStore, forceVisible: Bool = false, activateShownNote: Bool = true) {
+    private func show(
+        store: NoteStore,
+        forceVisible: Bool = false,
+        activateShownNote: Bool = true,
+        resetManualHidden: Bool = true
+    ) {
+        guard stores.contains(where: { $0.note.id == store.note.id }) else { return }
         let controller = noteWindowControllers[store.note.id] ?? NoteWindowController(store: store) { [weak self] in
             self?.createNote(inheriting: store.note)
         } deleteNote: { [weak self] noteID in
@@ -263,8 +310,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if activateShownNote {
             activate(noteID: store.note.id)
         }
-        controller.show(forceVisible: forceVisible)
+        controller.show(forceVisible: forceVisible, resetManualHidden: resetManualHidden)
         refreshOverlapOutlines()
+    }
+
+    private func pruneControllersWithoutStores() {
+        let activeNoteIDs = Set(stores.map(\.note.id))
+        noteWindowControllers.keys
+            .filter { !activeNoteIDs.contains($0) }
+            .forEach { noteID in
+                noteWindowControllers[noteID]?.close()
+                noteWindowControllers[noteID] = nil
+            }
     }
 
     private func activate(noteID: UUID) {
@@ -303,7 +360,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         activeNoteID = stores.last?.note.id
         if !stores.isEmpty {
-            showAllNotes(forceVisible: isShowingAllNotesUntilAppSwitch)
+            refreshNoteVisibilityForVisibleApps()
         } else {
             refreshOverlapOutlines()
         }
@@ -462,6 +519,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         image.unlockFocus()
         image.isTemplate = false
         return image
+    }
+
+    private func confirm(message: String) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = message
+        alert.addButton(withTitle: language.text(.yes))
+        alert.addButton(withTitle: language.text(.no))
+        alert.alertStyle = .warning
+        return alert.runModal() == .alertFirstButtonReturn
     }
 }
 
