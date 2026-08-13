@@ -22,6 +22,9 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
     private var isVisible = false
     private var presentationSnapshot: PresentationSnapshot
     private let overlapState = NoteOverlapState()
+    private var collapsedWindowInset: CGFloat {
+        (NoteView.collapsedDotHitSize - NoteView.collapsedDotSize) / 2
+    }
 
     init(
         store: NoteStore,
@@ -44,6 +47,16 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
         window.delegate = self
         window.noteMouseDownHandler = { [weak self] in
             self?.selectAndBringToFront()
+        }
+        window.collapsedClickHandler = { [weak self] in
+            self?.toggleCollapsed()
+        }
+        window.collapsedDragEndedHandler = { [weak self] in
+            self?.captureCurrentFrame()
+            self?.noteFrameChanged()
+        }
+        window.pinchHandler = { [weak self] magnification in
+            self?.handlePinch(magnification: magnification)
         }
         window.noteShortcutHandler = { [weak self] shortcut in
             guard let self else { return false }
@@ -93,7 +106,16 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
         isApplyingTransition = true
         store.updateCollapsed(nextCollapsedState)
         applyContent(animated: true)
-        isApplyingTransition = false
+        finishTransitionAfterAnimation()
+    }
+
+    private func handlePinch(magnification: CGFloat) {
+        guard window.isKeyWindow || window.isMainWindow else { return }
+        if magnification < 0, !store.note.isCollapsed {
+            toggleCollapsed()
+        } else if magnification > 0, store.note.isCollapsed {
+            toggleCollapsed()
+        }
     }
 
     func captureCurrentFrame() {
@@ -104,7 +126,7 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
 
     private func captureCurrentFrameWithoutRefreshGuard() {
         if store.note.isCollapsed {
-            store.updateCollapsedOrigin(window.frame.origin)
+            store.updateCollapsedOrigin(dotOrigin(forCollapsedWindowFrame: window.frame))
         } else {
             store.updateExpandedFrame(Self.noteFrame(forWindowFrame: window.frame))
         }
@@ -196,10 +218,18 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
         if store.note.isCollapsed {
             let dotOrigin = placementManager.clampedDotOrigin(store.note.collapsedOrigin.cgPoint)
             window.applyCollapsedStyle()
-            setFrame(CGRect(origin: dotOrigin, size: CGSize(width: 28, height: 28)), animated: animated, isCollapsing: true)
-            window.contentView = ClearHostingView(allowsTransparentTopHitTesting: true, rootView: DotView(store: store, overlapState: overlapState) { [weak self] in
-                self?.toggleCollapsed()
-            })
+            setFrame(collapsedWindowFrame(forDotOrigin: dotOrigin), animated: animated, isCollapsing: true)
+            window.contentView = ClearHostingView(allowsTransparentTopHitTesting: true, rootView: DotView(
+                store: store,
+                overlapState: overlapState,
+                expand: { [weak self] in
+                    self?.toggleCollapsed()
+                },
+                dragEnded: { [weak self] in
+                    self?.captureCurrentFrame()
+                    self?.noteFrameChanged()
+                }
+            ))
         } else {
             let frame = placementManager.clampedFrame(store.note.expandedFrame.cgRect)
             window.applyExpandedStyle()
@@ -256,17 +286,23 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
     }
 
     private func captureExpandedFrameIfNeeded() {
-        guard !window.frame.size.equalTo(CGSize(width: 28, height: 28)) else { return }
+        guard !store.note.isCollapsed else { return }
         let noteFrame = Self.noteFrame(forWindowFrame: window.frame)
         updateStoredFrameWithoutRefreshingContent {
             store.updateExpandedFrame(noteFrame)
-            store.updateCollapsedOrigin(CGPoint(x: noteFrame.midX - 14, y: noteFrame.midY - 14))
+            store.updateCollapsedOrigin(CGPoint(
+                x: noteFrame.midX - NoteView.collapsedDotSize / 2,
+                y: noteFrame.midY - NoteView.collapsedDotSize / 2
+            ))
         }
     }
 
     private func collapseFromResizeToDefaultSize() {
         let collapsedOrigin = placementManager.clampedDotOrigin(
-            CGPoint(x: window.frame.midX - 14, y: window.frame.midY - 14)
+            CGPoint(
+                x: window.frame.midX - NoteView.collapsedDotSize / 2,
+                y: window.frame.midY - NoteView.collapsedDotSize / 2
+            )
         )
         let restoreFrame = defaultSizedFrame(centeredOn: collapsedOrigin)
 
@@ -275,7 +311,7 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
         store.updateCollapsedOrigin(collapsedOrigin)
         store.updateCollapsed(true)
         applyContent(animated: true)
-        isApplyingTransition = false
+        finishTransitionAfterAnimation()
     }
 
     private func collapseIfNeededFromCurrentWindowFrame() -> Bool {
@@ -289,8 +325,8 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
     private func defaultSizedFrame(centeredOn dotOrigin: CGPoint) -> CGRect {
         let size = CGSize(width: 320, height: 260)
         let frame = CGRect(
-            x: dotOrigin.x + 14 - size.width / 2,
-            y: dotOrigin.y + 14 - size.height / 2,
+            x: dotOrigin.x + NoteView.collapsedDotSize / 2 - size.width / 2,
+            y: dotOrigin.y + NoteView.collapsedDotSize / 2 - size.height / 2,
             width: size.width,
             height: size.height
         )
@@ -298,14 +334,13 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
     }
 
     private func shouldCollapseFromResize(_ noteFrame: CGRect) -> Bool {
-        let baseArea = NoteView.minimumNoteWidth * NoteView.minimumNoteHeight
-        let reachedSingleAxisThreshold = noteFrame.width <= NoteView.collapseAxisThreshold
-            || noteFrame.height <= NoteView.collapseAxisThreshold
+        let reachedToolbarWidthLimit = noteFrame.width <= NoteView.toolbarCompressedWidth
+        let reachedVerticalLimit = noteFrame.height <= NoteView.collapseAxisThreshold
         let reachedResizeFloor = noteFrame.height <= NoteView.resizableFloorSize + 1
             || noteFrame.width <= NoteView.resizableFloorSize + 1
-        return reachedSingleAxisThreshold
+        return reachedToolbarWidthLimit
+            || reachedVerticalLimit
             || reachedResizeFloor
-            || noteFrame.width * noteFrame.height < baseArea * NoteView.collapseAreaRatio
     }
 
     private func showWindow(animated: Bool) {
@@ -366,10 +401,10 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
 
     private func moveExpandedFrameToCollapsedOrigin() {
         let previousFrame = store.note.expandedFrame.cgRect
-        let dotOrigin = window.frame.origin
+        let dotOrigin = dotOrigin(forCollapsedWindowFrame: window.frame)
         let frame = CGRect(
-            x: dotOrigin.x - previousFrame.width / 2 + 14,
-            y: dotOrigin.y - previousFrame.height / 2 + 14,
+            x: dotOrigin.x - previousFrame.width / 2 + NoteView.collapsedDotSize / 2,
+            y: dotOrigin.y - previousFrame.height / 2 + NoteView.collapsedDotSize / 2,
             width: previousFrame.width,
             height: previousFrame.height
         )
@@ -385,12 +420,19 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
         isApplyingTransition = wasApplyingTransition
     }
 
+    private func finishTransitionAfterAnimation() {
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(420))
+            self.isApplyingTransition = false
+        }
+    }
+
     private static func windowFrame(forNoteFrame noteFrame: CGRect) -> CGRect {
         return CGRect(
             x: noteFrame.minX,
             y: noteFrame.minY,
             width: noteFrame.width,
-            height: noteFrame.height + toolbarHeight
+            height: noteFrame.height
         )
     }
 
@@ -399,7 +441,7 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
             x: windowFrame.minX,
             y: windowFrame.minY,
             width: max(NoteView.resizableFloorSize, windowFrame.width),
-            height: max(NoteView.resizableFloorSize, windowFrame.height - toolbarHeight)
+            height: max(NoteView.resizableFloorSize, windowFrame.height)
         )
     }
 
@@ -415,11 +457,24 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
         presentationSnapshot = nextSnapshot
         if note.isCollapsed {
             let dotOrigin = placementManager.clampedDotOrigin(note.collapsedOrigin.cgPoint)
-            window.setFrame(CGRect(origin: dotOrigin, size: CGSize(width: 28, height: 28)), display: true)
+            window.setFrame(collapsedWindowFrame(forDotOrigin: dotOrigin), display: true)
         } else {
             let frame = placementManager.clampedFrame(note.expandedFrame.cgRect)
             window.setFrame(Self.windowFrame(forNoteFrame: frame), display: true)
         }
+    }
+
+    private func collapsedWindowFrame(forDotOrigin dotOrigin: CGPoint) -> CGRect {
+        CGRect(
+            x: dotOrigin.x - collapsedWindowInset,
+            y: dotOrigin.y - collapsedWindowInset,
+            width: NoteView.collapsedDotHitSize,
+            height: NoteView.collapsedDotHitSize
+        )
+    }
+
+    private func dotOrigin(forCollapsedWindowFrame frame: CGRect) -> CGPoint {
+        CGPoint(x: frame.minX + collapsedWindowInset, y: frame.minY + collapsedWindowInset)
     }
 }
 
@@ -473,21 +528,16 @@ private final class ClearHostingView<Content: View>: NSHostingView<Content> {
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        guard !allowsTransparentTopHitTesting else {
-            return super.hitTest(point)
-        }
-
-        let noteTopY = max(0, bounds.height - NoteView.toolbarHeight)
-        if point.y > noteTopY {
-            return super.hitTest(point).flatMap { hitView in
-                guard isLikelyToolbarHit(hitView) else {
-                    return nil
-                }
-                return hitView
-            }
-        }
-
         return super.hitTest(point)
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+
+        guard !allowsTransparentTopHitTesting else { return }
+        for area in resizeCursorAreas {
+            addCursorRect(area.rect, cursor: area.cursor)
+        }
     }
 
     private func configureClearLayer() {
@@ -498,19 +548,51 @@ private final class ClearHostingView<Content: View>: NSHostingView<Content> {
 
     override func draw(_ dirtyRect: NSRect) {}
 
-    private func isLikelyToolbarHit(_ view: NSView) -> Bool {
-        guard view !== self else {
-            return false
-        }
-
-        var current: NSView? = view
-        while let candidate = current, candidate !== self {
-            if NSStringFromClass(type(of: candidate)).contains("Button")
-                || NSStringFromClass(type(of: candidate)).contains("Menu") {
-                return true
-            }
-            current = candidate.superview
-        }
-        return false
+    private var toolbarHitFrame: NSRect {
+        let width: CGFloat = 252
+        let height = NoteView.toolbarHeight
+        return NSRect(
+            x: max(0, bounds.width - width),
+            y: max(0, bounds.height - height),
+            width: min(width, bounds.width),
+            height: height
+        )
     }
+
+    private var resizeCursorAreas: [(rect: NSRect, cursor: NSCursor)] {
+        let edgeThickness: CGFloat = 14
+        let cornerSize: CGFloat = 28
+        guard bounds.height > edgeThickness, bounds.width > edgeThickness else { return [] }
+
+        let sideHeight = max(0, bounds.height - NoteView.toolbarHeight - cornerSize)
+        let bottomWidth = max(0, bounds.width - cornerSize * 2)
+        return [
+            (
+                visualRect(x: 0, yFromTop: NoteView.toolbarHeight, width: edgeThickness, height: sideHeight),
+                .resizeLeftRight
+            ),
+            (
+                visualRect(x: bounds.width - edgeThickness, yFromTop: NoteView.toolbarHeight, width: edgeThickness, height: sideHeight),
+                .resizeLeftRight
+            ),
+            (
+                visualRect(x: cornerSize, yFromTop: bounds.height - edgeThickness, width: bottomWidth, height: edgeThickness),
+                .resizeUpDown
+            ),
+            (
+                visualRect(x: 0, yFromTop: bounds.height - cornerSize, width: cornerSize, height: cornerSize),
+                .resizeLeftRight
+            ),
+            (
+                visualRect(x: bounds.width - cornerSize, yFromTop: bounds.height - cornerSize, width: cornerSize, height: cornerSize),
+                .resizeLeftRight
+            )
+        ]
+    }
+
+    private func visualRect(x: CGFloat, yFromTop: CGFloat, width: CGFloat, height: CGFloat) -> NSRect {
+        let y = isFlipped ? yFromTop : bounds.height - yFromTop - height
+        return NSRect(x: x, y: y, width: width, height: height)
+    }
+
 }

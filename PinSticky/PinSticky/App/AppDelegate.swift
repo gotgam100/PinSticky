@@ -1,21 +1,34 @@
 import AppKit
 import ApplicationServices
+import Carbon.HIToolbox
 import SwiftUI
+
+private let globalNewNoteHotKeyIDValue: UInt32 = 1
+private let globalNewNoteHotKeySignature = fourCharacterCode("PSTK")
+
+private func fourCharacterCode(_ string: String) -> OSType {
+    string.utf8.reduce(0) { ($0 << 8) + OSType($1) }
+}
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var language = NoteStore.savedLanguage()
     private var defaultThemeID = NoteStore.savedDefaultThemeID()
     private var defaultTextColor = NoteStore.savedDefaultTextColor()
+    private var globalNewNoteShortcut = GlobalNewNoteShortcut.saved()
     private var stores: [NoteStore] = []
     private var noteWindowControllers: [UUID: NoteWindowController] = [:]
     private var activeNoteID: UUID?
     private var statusItem: NSStatusItem?
     private var settingsWindow: NSWindow?
+    private var shortcutSettingsWindow: NSWindow?
     private var noteListWindow: NSWindow?
     private var deletedNotesWindow: NSWindow?
     private var localKeyMonitor: Any?
     private var globalKeyMonitor: Any?
+    private var globalNewNoteHotKeyRef: EventHotKeyRef?
+    private var globalNewNoteHotKeyHandler: EventHandlerRef?
+    private var isGlobalNewNoteHotKeyRegistered = false
     private var windowVisibilityTimer: Timer?
     private var lastExternalFrontmostBundleIdentifier: String?
     private var lastExternalFrontmostPID: pid_t?
@@ -30,6 +43,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         observeActiveApplications()
         startWindowVisibilityPolling()
         installKeyMonitor()
+        registerGlobalNewNoteHotKey()
         configureStatusItem()
         showAllNotes()
     }
@@ -41,6 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let globalKeyMonitor {
             NSEvent.removeMonitor(globalKeyMonitor)
         }
+        unregisterGlobalNewNoteHotKey()
         windowVisibilityTimer?.invalidate()
         noteWindowControllers.values.forEach { $0.captureCurrentFrame() }
         stores.forEach { $0.flush() }
@@ -68,14 +83,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         createNote(inheriting: nil)
     }
 
+    @objc private func globalNewNote() {
+        createGlobalNote(centeredAt: currentMouseLocation())
+    }
+
+    private func createGlobalNote(centeredAt centerPoint: CGPoint) {
+        createNote(inheriting: nil, centeredAt: centerPoint, forceVisible: true)
+    }
+
     @objc private func newNoteWithTheme(_ sender: NSMenuItem) {
         createNote(inheriting: nil, themeID: sender.representedObject as? String)
     }
 
-    private func createNote(inheriting note: StickerNote?, themeID: String? = nil) {
-        let noteStore = NoteStore.makeNew(offset: stores.count, inheriting: note, themeID: themeID)
+    private func createNote(
+        inheriting note: StickerNote?,
+        themeID: String? = nil,
+        centeredAt centerPoint: CGPoint? = nil,
+        forceVisible: Bool? = nil
+    ) {
+        let noteStore = NoteStore.makeNew(
+            offset: stores.count,
+            inheriting: note,
+            themeID: themeID,
+            centeredAt: centerPoint
+        )
         stores.append(noteStore)
-        show(store: noteStore, forceVisible: noteStore.note.displayMode == .always || isShowingAllNotesUntilAppSwitch)
+        show(
+            store: noteStore,
+            forceVisible: forceVisible ?? (noteStore.note.displayMode == .always || isShowingAllNotesUntilAppSwitch)
+        )
         updateNoteListWindowContent()
         NSApp.activate()
     }
@@ -166,11 +202,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.title = language.text(.settings)
         window.isReleasedWhenClosed = false
         window.center()
-        window.contentView = NSHostingView(rootView: SettingsView(onChange: { [weak self] in
+        window.contentView = NSHostingView(rootView: SettingsView(
+            onChange: { [weak self] in
+                self?.refreshPreferencesFromSettings()
+            },
+            openShortcutSettings: { [weak self] in
+                self?.showShortcutSettings()
+            }
+        ))
+        window.makeKeyAndOrderFront(nil)
+        settingsWindow = window
+    }
+
+    @objc private func showShortcutSettings() {
+        NSApp.activate()
+
+        if let shortcutSettingsWindow {
+            shortcutSettingsWindow.makeKeyAndOrderFront(nil)
+            return
+        }
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 560, height: 430),
+            styleMask: [.titled, .closable, .miniaturizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = language.text(.shortcutSettings)
+        window.isReleasedWhenClosed = false
+        window.center()
+        window.contentView = NSHostingView(rootView: ShortcutSettingsView(onChange: { [weak self] in
             self?.refreshPreferencesFromSettings()
         }))
         window.makeKeyAndOrderFront(nil)
-        settingsWindow = window
+        shortcutSettingsWindow = window
     }
 
     @objc private func showNoteList() {
@@ -225,10 +290,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         language = NoteStore.savedLanguage()
         defaultThemeID = NoteStore.savedDefaultThemeID()
         defaultTextColor = NoteStore.savedDefaultTextColor()
+        globalNewNoteShortcut = GlobalNewNoteShortcut.saved()
         settingsWindow?.title = language.text(.settings)
+        shortcutSettingsWindow?.title = language.text(.shortcutSettings)
         noteListWindow?.title = language.text(.noteList)
         deletedNotesWindow?.title = language.text(.restoreDeletedNotes)
         stores.forEach { $0.updateLanguage(language) }
+        registerGlobalNewNoteHotKey()
         configureStatusItem()
     }
 
@@ -267,18 +335,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let menu = NSMenu()
         menu.addItem(newNoteMenuItem())
-        menu.addItem(statusMenuItem(title: language.text(.noteList), action: #selector(showNoteList), keyEquivalent: "l"))
-        menu.addItem(statusMenuItem(title: language.text(.showNote), action: #selector(showNote), keyEquivalent: "s"))
+        menu.addItem(statusMenuItem(title: language.text(.noteList), action: #selector(showNoteList), shortcutAction: .noteList))
+        menu.addItem(statusMenuItem(title: language.text(.showNote), action: #selector(showNote), shortcutAction: .showAll))
         menu.addItem(.separator())
-        menu.addItem(statusMenuItem(title: language.text(.collapseExpand), action: #selector(toggleCollapse), keyEquivalent: "d"))
-        menu.addItem(statusMenuItem(title: language.text(.nextTheme), action: #selector(cycleTheme), keyEquivalent: "t"))
-        menu.addItem(statusMenuItem(title: language.text(.closeNote), action: #selector(closeNote), keyEquivalent: "w"))
+        menu.addItem(statusMenuItem(title: language.text(.collapseExpand), action: #selector(toggleCollapse), shortcutAction: .collapseExpand))
+        menu.addItem(statusMenuItem(title: language.text(.nextTheme), action: #selector(cycleTheme), shortcutAction: .nextTheme))
+        menu.addItem(statusMenuItem(title: language.text(.closeNote), action: #selector(closeNote), shortcutAction: .closeNote))
         menu.addItem(.separator())
         menu.addItem(statusMenuItem(title: language.text(.restoreDeletedNotes), action: #selector(showDeletedNotesRestore)))
         menu.addItem(.separator())
-        menu.addItem(statusMenuItem(title: language.text(.settings), action: #selector(showSettings), keyEquivalent: ","))
+        menu.addItem(statusMenuItem(title: language.text(.settings), action: #selector(showSettings), shortcutAction: .settings))
         menu.addItem(statusMenuItem(title: language.text(.about), action: #selector(showAbout)))
-        menu.addItem(statusMenuItem(title: language.text(.quit), action: #selector(quit), keyEquivalent: "q"))
+        menu.addItem(statusMenuItem(title: language.text(.quit), action: #selector(quit), shortcutAction: .quit))
 
         item.menu = menu
         statusItem = item
@@ -583,8 +651,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return nil
     }
 
-    private func statusMenuItem(title: String, action: Selector, keyEquivalent: String = "") -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: action, keyEquivalent: keyEquivalent)
+    private func statusMenuItem(title: String, action: Selector, shortcutAction: AppShortcutAction? = nil) -> NSMenuItem {
+        let shortcut = shortcutAction?.savedShortcut()
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: shortcut?.keyEquivalent ?? "")
+        if let shortcut {
+            item.keyEquivalentModifierMask = shortcut.menuModifierMask
+        }
         item.target = self
         return item
     }
@@ -593,8 +665,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let item = NSMenuItem(title: language.text(.newNote), action: nil, keyEquivalent: "")
         let submenu = NSMenu()
 
-        let defaultItem = NSMenuItem(title: language.text(.defaultNewNote), action: #selector(newNote), keyEquivalent: "n")
+        let defaultItem = NSMenuItem(
+            title: language.text(.defaultNewNote),
+            action: #selector(globalNewNote),
+            keyEquivalent: globalNewNoteShortcut.keyEquivalent
+        )
         defaultItem.target = self
+        defaultItem.keyEquivalentModifierMask = globalNewNoteShortcut.menuModifierMask
         defaultItem.image = themeSwatchImage(BuiltInThemes.theme(id: defaultThemeID))
         submenu.addItem(defaultItem)
         submenu.addItem(.separator())
@@ -695,13 +772,86 @@ private extension AppDelegate {
         }
     }
 
+    func registerGlobalNewNoteHotKey() {
+        unregisterGlobalNewNoteHotKey()
+        guard globalNewNoteShortcut.isValid else { return }
+
+        let eventSpec = EventTypeSpec(
+            eventClass: OSType(kEventClassKeyboard),
+            eventKind: UInt32(kEventHotKeyPressed)
+        )
+
+        let handlerStatus = InstallEventHandler(
+            GetApplicationEventTarget(),
+            { _, eventRef, userData in
+                var hotKeyID = EventHotKeyID()
+                let status = GetEventParameter(
+                    eventRef,
+                    EventParamName(kEventParamDirectObject),
+                    EventParamType(typeEventHotKeyID),
+                    nil,
+                    MemoryLayout<EventHotKeyID>.size,
+                    nil,
+                    &hotKeyID
+                )
+
+                guard status == noErr,
+                      hotKeyID.signature == globalNewNoteHotKeySignature,
+                      hotKeyID.id == globalNewNoteHotKeyIDValue,
+                      let userData else {
+                    return OSStatus(eventNotHandledErr)
+                }
+
+                let appDelegate = Unmanaged<AppDelegate>.fromOpaque(userData).takeUnretainedValue()
+                let mouseLocation = appDelegate.currentMouseLocation()
+                Task { @MainActor in
+                    appDelegate.createGlobalNote(centeredAt: mouseLocation)
+                }
+                return noErr
+            },
+            1,
+            [eventSpec],
+            Unmanaged.passUnretained(self).toOpaque(),
+            &globalNewNoteHotKeyHandler
+        )
+
+        guard handlerStatus == noErr else { return }
+
+        let hotKeyID = EventHotKeyID(signature: globalNewNoteHotKeySignature, id: globalNewNoteHotKeyIDValue)
+        let hotKeyStatus = RegisterEventHotKey(
+            globalNewNoteShortcut.keyCode,
+            globalNewNoteShortcut.carbonModifierMask,
+            hotKeyID,
+            GetApplicationEventTarget(),
+            0,
+            &globalNewNoteHotKeyRef
+        )
+
+        isGlobalNewNoteHotKeyRegistered = hotKeyStatus == noErr
+    }
+
+    func unregisterGlobalNewNoteHotKey() {
+        if let globalNewNoteHotKeyRef {
+            UnregisterEventHotKey(globalNewNoteHotKeyRef)
+            self.globalNewNoteHotKeyRef = nil
+        }
+        if let globalNewNoteHotKeyHandler {
+            RemoveEventHandler(globalNewNoteHotKeyHandler)
+            self.globalNewNoteHotKeyHandler = nil
+        }
+        isGlobalNewNoteHotKeyRegistered = false
+    }
+
+    func currentMouseLocation() -> CGPoint {
+        NSEvent.mouseLocation
+    }
+
     func handleStatusShortcut(_ event: NSEvent) -> Bool {
-        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == ProcessInfo.processInfo.processIdentifier,
-              event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command else {
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == ProcessInfo.processInfo.processIdentifier else {
             return false
         }
 
-        switch event.pinStickyShortcutKey {
+        switch AppShortcutAction.matching(event) {
         case .newNote:
             newNote()
         case .noteList:

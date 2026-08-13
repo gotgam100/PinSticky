@@ -225,6 +225,30 @@ final class ContextMenuTextView: NSTextView {
     weak var owner: NoteRichTextEditor.Coordinator?
     private var trackingArea: NSTrackingArea?
 
+    override func paste(_ sender: Any?) {
+        guard let plainText = NSPasteboard.general.string(forType: .string),
+              let owner else {
+            super.paste(sender)
+            return
+        }
+
+        let theme = BuiltInThemes.theme(id: owner.store.note.themeID)
+        let note = owner.store.note
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: note.fontSize, weight: .medium),
+            .foregroundColor: NSColor(hex: theme.foreground),
+            .paragraphStyle: NSParagraphStyle.pinStickyDefault(fontSize: note.fontSize),
+            .kern: 0
+        ]
+        let attributed = NSAttributedString(string: plainText, attributes: attributes)
+        let replacementRange = selectedRange()
+        textStorage?.replaceCharacters(in: replacementRange, with: attributed)
+        setSelectedRange(NSRange(location: replacementRange.location + attributed.length, length: 0))
+        if let storage = textStorage {
+            owner.store.updateAttributedContent(storage)
+        }
+    }
+
     override func menu(for event: NSEvent) -> NSMenu? {
         let menu = NSMenu()
 
@@ -325,6 +349,16 @@ final class ContextMenuTextView: NSTextView {
             return false
         }
 
+        if let shortcutAction = AppShortcutAction.matching(event),
+           let shortcut = shortcutAction.pinStickyShortcutKey {
+            switch shortcut {
+            case .closeNote:
+                return (window as? StickerNoteWindow)?.noteShortcutHandler?(.closeNote) == true
+            default:
+                break
+            }
+        }
+
         switch event.pinStickyShortcutKey {
         case .undo:
             undoManager?.undo()
@@ -344,8 +378,6 @@ final class ContextMenuTextView: NSTextView {
         case .selectAll:
             selectAll(nil)
             return true
-        case .closeNote:
-            return (window as? StickerNoteWindow)?.noteShortcutHandler?(.closeNote) == true
         default:
             return false
         }
@@ -501,6 +533,21 @@ enum PinStickyShortcutKey {
     case closeNote
     case settings
     case quit
+}
+
+extension AppShortcutAction {
+    var pinStickyShortcutKey: PinStickyShortcutKey? {
+        switch self {
+        case .newNote: .newNote
+        case .noteList: .noteList
+        case .showAll: .showAll
+        case .collapseExpand: .collapseExpand
+        case .nextTheme: .nextTheme
+        case .closeNote: .closeNote
+        case .settings: .settings
+        case .quit: .quit
+        }
+    }
 }
 
 extension NSEvent {

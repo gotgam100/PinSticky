@@ -21,6 +21,7 @@
 		111111111111111111111112 /* NoteRichTextEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 111111111111111111111014 /* NoteRichTextEditor.swift */; };
 		111111111111111111111113 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 111111111111111111111015 /* Assets.xcassets */; };
 		111111111111111111111114 /* Paperlogy-7Bold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 111111111111111111111016 /* Paperlogy-7Bold.ttf */; };
+		111111111111111111111115 /* Paperlogy-6SemiBold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 111111111111111111111017 /* Paperlogy-6SemiBold.ttf */; };
 		222222222222222222221101 /* NoteListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 222222222222222222221001 /* NoteListView.swift */; };
 /* End PBXBuildFile section */
 
@@ -42,6 +43,7 @@
 		111111111111111111111014 /* NoteRichTextEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteRichTextEditor.swift; sourceTree = "<group>"; };
 		111111111111111111111015 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		111111111111111111111016 /* Paperlogy-7Bold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Paperlogy-7Bold.ttf"; sourceTree = "<group>"; };
+		111111111111111111111017 /* Paperlogy-6SemiBold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Paperlogy-6SemiBold.ttf"; sourceTree = "<group>"; };
 		222222222222222222221001 /* NoteListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteListView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -154,6 +156,7 @@
 			isa = PBXGroup;
 			children = (
 				111111111111111111111016 /* Paperlogy-7Bold.ttf */,
+				111111111111111111111017 /* Paperlogy-6SemiBold.ttf */,
 			);
 			path = Fonts;
 			sourceTree = "<group>";
@@ -218,6 +221,7 @@
 			files = (
 				111111111111111111111113 /* Assets.xcassets in Resources */,
 				111111111111111111111114 /* Paperlogy-7Bold.ttf in Resources */,
+				111111111111111111111115 /* Paperlogy-6SemiBold.ttf in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

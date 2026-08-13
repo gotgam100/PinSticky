@@ -117,12 +117,27 @@ final class NoteStore: ObservableObject {
         makeNew(offset: offset, inheriting: nil)
     }
 
-    static func makeNew(offset: Int, inheriting source: StickerNote?, themeID selectedThemeID: String? = nil) -> NoteStore {
-        let visible = NSScreen.main?.visibleFrame ?? CGRect(x: 0, y: 0, width: 1280, height: 800)
-        let origin = CGPoint(
-            x: visible.minX + 140 + CGFloat(offset % 8) * 28,
-            y: visible.maxY - 320 - CGFloat(offset % 8) * 28
-        )
+    static func makeNew(
+        offset: Int,
+        inheriting source: StickerNote?,
+        themeID selectedThemeID: String? = nil,
+        centeredAt centerPoint: CGPoint? = nil
+    ) -> NoteStore {
+        let size = CGSize(width: 320, height: 260)
+        let visible = bestVisibleFrame(for: centerPoint)
+        let origin: CGPoint
+        if let centerPoint {
+            origin = clampedOrigin(
+                CGPoint(x: centerPoint.x - size.width / 2, y: centerPoint.y - size.height / 2),
+                size: size,
+                visible: visible
+            )
+        } else {
+            origin = CGPoint(
+                x: visible.minX + 140 + CGFloat(offset % 8) * 28,
+                y: visible.maxY - size.height - 60 - CGFloat(offset % 8) * 28
+            )
+        }
         var note = StickerNote.fresh(origin: origin, language: savedLanguage())
         if let source {
             note.themeID = source.themeID
@@ -141,6 +156,21 @@ final class NoteStore: ObservableObject {
             }
         }
         return NoteStore(note: note, fileURL: fileURL(for: note.id))
+    }
+
+    private static func bestVisibleFrame(for point: CGPoint?) -> CGRect {
+        if let point,
+           let screen = NSScreen.screens.first(where: { $0.frame.contains(point) }) {
+            return screen.visibleFrame
+        }
+        return NSScreen.main?.visibleFrame ?? CGRect(x: 0, y: 0, width: 1280, height: 800)
+    }
+
+    private static func clampedOrigin(_ origin: CGPoint, size: CGSize, visible: CGRect) -> CGPoint {
+        CGPoint(
+            x: min(max(origin.x, visible.minX), visible.maxX - size.width),
+            y: min(max(origin.y, visible.minY), visible.maxY - size.height)
+        )
     }
 
     static func makeRestored(note: StickerNote) -> NoteStore {

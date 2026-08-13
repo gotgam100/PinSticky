@@ -1,3 +1,5 @@
+import AppKit
+import Carbon.HIToolbox
 import Foundation
 
 struct StickerNote: Codable, Equatable, Identifiable {
@@ -125,6 +127,261 @@ struct DeletedStickerNote: Codable, Equatable, Identifiable {
     }
 }
 
+struct AppShortcut: Codable, Equatable {
+    var keyCode: UInt32
+    var characters: String
+    var usesCommand: Bool
+    var usesOption: Bool
+    var usesControl: Bool
+    var usesShift: Bool
+
+    var isValid: Bool {
+        !characters.isEmpty && (usesCommand || usesOption || usesControl || usesShift)
+    }
+
+    var keyEquivalent: String {
+        characters.lowercased()
+    }
+
+    var menuModifierMask: NSEvent.ModifierFlags {
+        var mask: NSEvent.ModifierFlags = []
+        if usesCommand { mask.insert(.command) }
+        if usesOption { mask.insert(.option) }
+        if usesControl { mask.insert(.control) }
+        if usesShift { mask.insert(.shift) }
+        return mask
+    }
+
+    var carbonModifierMask: UInt32 {
+        var mask: UInt32 = 0
+        if usesCommand { mask |= UInt32(cmdKey) }
+        if usesOption { mask |= UInt32(optionKey) }
+        if usesControl { mask |= UInt32(controlKey) }
+        if usesShift { mask |= UInt32(shiftKey) }
+        return mask
+    }
+
+    var displayText: String {
+        var parts: [String] = []
+        if usesControl { parts.append("⌃") }
+        if usesOption { parts.append("⌥") }
+        if usesShift { parts.append("⇧") }
+        if usesCommand { parts.append("⌘") }
+        parts.append(characters.uppercased())
+        return parts.joined()
+    }
+
+    func matches(_ event: NSEvent) -> Bool {
+        guard isValid, event.keyCode == keyCode else { return false }
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        var expected: NSEvent.ModifierFlags = []
+        if usesCommand { expected.insert(.command) }
+        if usesOption { expected.insert(.option) }
+        if usesControl { expected.insert(.control) }
+        if usesShift { expected.insert(.shift) }
+        return flags == expected
+    }
+
+    static func shortcut(forInput input: String, basedOn shortcut: AppShortcut) -> AppShortcut? {
+        let normalized = input.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        guard normalized.count == 1,
+              let character = normalized.first,
+              let keyCode = keyCode(for: character) else {
+            return nil
+        }
+        var next = shortcut
+        next.characters = String(character)
+        next.keyCode = keyCode
+        return next
+    }
+
+    static func keyCode(for character: Character) -> UInt32? {
+        switch character {
+        case "A": UInt32(kVK_ANSI_A)
+        case "B": UInt32(kVK_ANSI_B)
+        case "C": UInt32(kVK_ANSI_C)
+        case "D": UInt32(kVK_ANSI_D)
+        case "E": UInt32(kVK_ANSI_E)
+        case "F": UInt32(kVK_ANSI_F)
+        case "G": UInt32(kVK_ANSI_G)
+        case "H": UInt32(kVK_ANSI_H)
+        case "I": UInt32(kVK_ANSI_I)
+        case "J": UInt32(kVK_ANSI_J)
+        case "K": UInt32(kVK_ANSI_K)
+        case "L": UInt32(kVK_ANSI_L)
+        case "M": UInt32(kVK_ANSI_M)
+        case "N": UInt32(kVK_ANSI_N)
+        case "O": UInt32(kVK_ANSI_O)
+        case "P": UInt32(kVK_ANSI_P)
+        case "Q": UInt32(kVK_ANSI_Q)
+        case "R": UInt32(kVK_ANSI_R)
+        case "S": UInt32(kVK_ANSI_S)
+        case "T": UInt32(kVK_ANSI_T)
+        case "U": UInt32(kVK_ANSI_U)
+        case "V": UInt32(kVK_ANSI_V)
+        case "W": UInt32(kVK_ANSI_W)
+        case "X": UInt32(kVK_ANSI_X)
+        case "Y": UInt32(kVK_ANSI_Y)
+        case "Z": UInt32(kVK_ANSI_Z)
+        case "0": UInt32(kVK_ANSI_0)
+        case "1": UInt32(kVK_ANSI_1)
+        case "2": UInt32(kVK_ANSI_2)
+        case "3": UInt32(kVK_ANSI_3)
+        case "4": UInt32(kVK_ANSI_4)
+        case "5": UInt32(kVK_ANSI_5)
+        case "6": UInt32(kVK_ANSI_6)
+        case "7": UInt32(kVK_ANSI_7)
+        case "8": UInt32(kVK_ANSI_8)
+        case "9": UInt32(kVK_ANSI_9)
+        case ",": UInt32(kVK_ANSI_Comma)
+        case ".": UInt32(kVK_ANSI_Period)
+        case "/": UInt32(kVK_ANSI_Slash)
+        case ";": UInt32(kVK_ANSI_Semicolon)
+        case "'": UInt32(kVK_ANSI_Quote)
+        case "[": UInt32(kVK_ANSI_LeftBracket)
+        case "]": UInt32(kVK_ANSI_RightBracket)
+        case "\\": UInt32(kVK_ANSI_Backslash)
+        case "-": UInt32(kVK_ANSI_Minus)
+        case "=": UInt32(kVK_ANSI_Equal)
+        default: nil
+        }
+    }
+}
+
+enum AppShortcutAction: String, CaseIterable, Identifiable {
+    case newNote
+    case noteList
+    case showAll
+    case collapseExpand
+    case nextTheme
+    case closeNote
+    case settings
+    case quit
+
+    var id: String { rawValue }
+
+    static let configurableCases: [AppShortcutAction] = [
+        .newNote,
+        .noteList,
+        .showAll,
+        .collapseExpand,
+        .nextTheme,
+        .closeNote,
+        .settings,
+        .quit
+    ]
+
+    var defaultShortcut: AppShortcut {
+        switch self {
+        case .newNote:
+            AppShortcut(keyCode: UInt32(kVK_ANSI_N), characters: "N", usesCommand: true, usesOption: true, usesControl: false, usesShift: false)
+        case .noteList:
+            AppShortcut(keyCode: UInt32(kVK_ANSI_L), characters: "L", usesCommand: true, usesOption: false, usesControl: false, usesShift: false)
+        case .showAll:
+            AppShortcut(keyCode: UInt32(kVK_ANSI_S), characters: "S", usesCommand: true, usesOption: false, usesControl: false, usesShift: false)
+        case .collapseExpand:
+            AppShortcut(keyCode: UInt32(kVK_ANSI_D), characters: "D", usesCommand: true, usesOption: false, usesControl: false, usesShift: false)
+        case .nextTheme:
+            AppShortcut(keyCode: UInt32(kVK_ANSI_T), characters: "T", usesCommand: true, usesOption: false, usesControl: false, usesShift: false)
+        case .closeNote:
+            AppShortcut(keyCode: UInt32(kVK_ANSI_W), characters: "W", usesCommand: true, usesOption: false, usesControl: false, usesShift: false)
+        case .settings:
+            AppShortcut(keyCode: UInt32(kVK_ANSI_Comma), characters: ",", usesCommand: true, usesOption: false, usesControl: false, usesShift: false)
+        case .quit:
+            AppShortcut(keyCode: UInt32(kVK_ANSI_Q), characters: "Q", usesCommand: true, usesOption: false, usesControl: false, usesShift: false)
+        }
+    }
+
+    var appText: AppText {
+        switch self {
+        case .newNote: .newNote
+        case .noteList: .noteList
+        case .showAll: .showNote
+        case .collapseExpand: .collapseExpand
+        case .nextTheme: .nextTheme
+        case .closeNote: .closeNote
+        case .settings: .settings
+        case .quit: .quit
+        }
+    }
+
+    func title(language: AppLanguage) -> String {
+        language.text(appText)
+    }
+
+    func savedShortcut() -> AppShortcut {
+        AppShortcutStore.savedShortcut(for: self)
+    }
+
+    static func matching(_ event: NSEvent) -> AppShortcutAction? {
+        configurableCases.first { $0.savedShortcut().matches(event) }
+    }
+}
+
+enum AppShortcutStore {
+    private static let legacyNewNoteKeyCode = "globalNewNoteShortcutKeyCode"
+    private static let legacyNewNoteCharacters = "globalNewNoteShortcutCharacters"
+    private static let legacyNewNoteCommand = "globalNewNoteShortcutCommand"
+    private static let legacyNewNoteOption = "globalNewNoteShortcutOption"
+    private static let legacyNewNoteControl = "globalNewNoteShortcutControl"
+    private static let legacyNewNoteShift = "globalNewNoteShortcutShift"
+
+    static func savedShortcut(for action: AppShortcutAction) -> AppShortcut {
+        let prefix = defaultsPrefix(for: action)
+        guard UserDefaults.standard.object(forKey: "\(prefix).keyCode") != nil else {
+            if action == .newNote,
+               UserDefaults.standard.object(forKey: legacyNewNoteKeyCode) != nil {
+                return AppShortcut(
+                    keyCode: UInt32(UserDefaults.standard.integer(forKey: legacyNewNoteKeyCode)),
+                    characters: UserDefaults.standard.string(forKey: legacyNewNoteCharacters) ?? action.defaultShortcut.characters,
+                    usesCommand: UserDefaults.standard.bool(forKey: legacyNewNoteCommand),
+                    usesOption: UserDefaults.standard.bool(forKey: legacyNewNoteOption),
+                    usesControl: UserDefaults.standard.bool(forKey: legacyNewNoteControl),
+                    usesShift: UserDefaults.standard.bool(forKey: legacyNewNoteShift)
+                )
+            }
+            return action.defaultShortcut
+        }
+
+        return AppShortcut(
+            keyCode: UInt32(UserDefaults.standard.integer(forKey: "\(prefix).keyCode")),
+            characters: UserDefaults.standard.string(forKey: "\(prefix).characters") ?? action.defaultShortcut.characters,
+            usesCommand: UserDefaults.standard.bool(forKey: "\(prefix).command"),
+            usesOption: UserDefaults.standard.bool(forKey: "\(prefix).option"),
+            usesControl: UserDefaults.standard.bool(forKey: "\(prefix).control"),
+            usesShift: UserDefaults.standard.bool(forKey: "\(prefix).shift")
+        )
+    }
+
+    static func save(_ shortcut: AppShortcut, for action: AppShortcutAction) {
+        let prefix = defaultsPrefix(for: action)
+        UserDefaults.standard.set(Int(shortcut.keyCode), forKey: "\(prefix).keyCode")
+        UserDefaults.standard.set(shortcut.characters.uppercased(), forKey: "\(prefix).characters")
+        UserDefaults.standard.set(shortcut.usesCommand, forKey: "\(prefix).command")
+        UserDefaults.standard.set(shortcut.usesOption, forKey: "\(prefix).option")
+        UserDefaults.standard.set(shortcut.usesControl, forKey: "\(prefix).control")
+        UserDefaults.standard.set(shortcut.usesShift, forKey: "\(prefix).shift")
+    }
+
+    static func reset(_ action: AppShortcutAction) {
+        save(action.defaultShortcut, for: action)
+    }
+
+    private static func defaultsPrefix(for action: AppShortcutAction) -> String {
+        "appShortcut.\(action.rawValue)"
+    }
+}
+
+enum GlobalNewNoteShortcut {
+    static func saved() -> AppShortcut {
+        AppShortcutStore.savedShortcut(for: .newNote)
+    }
+
+    static func save(_ shortcut: AppShortcut) {
+        AppShortcutStore.save(shortcut, for: .newNote)
+    }
+}
+
 enum NoteDisplayMode: String, Codable, Equatable {
     case always
     case whenAppIsActive
@@ -239,6 +496,14 @@ enum AppLanguage: String, CaseIterable, Equatable {
         case (.english, .defaultTextColor): "Text Color"
         case (.korean, .systemTextColor): "배경색에 맞춤"
         case (.english, .systemTextColor): "Match Background"
+        case (.korean, .launchAtLogin): "컴퓨터 로그인 시 자동실행"
+        case (.english, .launchAtLogin): "Open at Login"
+        case (.korean, .shortcutSettings): "단축키 설정"
+        case (.english, .shortcutSettings): "Shortcut Settings"
+        case (.korean, .newNoteShortcut): "새 메모"
+        case (.english, .newNoteShortcut): "New Note"
+        case (.korean, .shortcutKey): "키"
+        case (.english, .shortcutKey): "Key"
         case (.korean, .termsAndPolicies): "이용약관 및 정책"
         case (.english, .termsAndPolicies): "Terms and Policies"
         case (.korean, .developerApps): "개발자의 다른 앱"
@@ -271,6 +536,15 @@ enum AppLanguage: String, CaseIterable, Equatable {
         case (.english, .restore): "Restore"
         case (.korean, .refresh): "새로고침"
         case (.english, .refresh): "Refresh"
+        case (.korean, .resetShortcut): "기본값"
+        case (.english, .resetShortcut): "Default"
+        }
+    }
+
+    func shortcutConflictText(_ actionTitle: String) -> String {
+        switch self {
+        case .korean: "\(actionTitle)에 이미 배정되어 사용할 수 없습니다."
+        case .english: "Already assigned to \(actionTitle)."
         }
     }
 }
@@ -320,6 +594,10 @@ enum AppText {
     case defaultBackground
     case defaultTextColor
     case systemTextColor
+    case launchAtLogin
+    case shortcutSettings
+    case newNoteShortcut
+    case shortcutKey
     case termsAndPolicies
     case developerApps
     case deleteNote
@@ -336,6 +614,7 @@ enum AppText {
     case noDeletedNotes
     case restore
     case refresh
+    case resetShortcut
 }
 
 struct CodableRect: Codable, Equatable {

@@ -27,6 +27,7 @@
 	<key>UIAppFonts</key>
 	<array>
 		<string>Paperlogy-7Bold.ttf</string>
+		<string>Paperlogy-6SemiBold.ttf</string>
 	</array>
 	<key>NSHumanReadableDescription</key>
 	<string>PinSticky keeps quick floating notes visible while you work.</string>

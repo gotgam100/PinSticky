@@ -7,8 +7,6 @@ struct NoteView: View {
     let newNote: () -> Void
     let deleteNote: () -> Void
     let collapse: () -> Void
-    @State private var isNoteHovering = false
-    @State private var isControlsHovering = false
 
     static let minimumNoteWidth: CGFloat = 270
     static let minimumNoteHeight: CGFloat = 170
@@ -16,7 +14,11 @@ struct NoteView: View {
     static let collapseAreaRatio: CGFloat = 0.25
     static let collapseAxisThreshold: CGFloat = resizableFloorSize + 24
     static let toolbarMinimumVisibleWidth: CGFloat = 225
+    static let toolbarCompressedWidth: CGFloat = 170
     static let toolbarHeight: CGFloat = 36
+    static let collapsedDotSize: CGFloat = 28
+    static let collapsedDotVisualSize: CGFloat = 24
+    static let collapsedDotHitSize: CGFloat = 44
 
     private var theme: NoteTheme {
         BuiltInThemes.theme(id: store.note.themeID)
@@ -30,48 +32,55 @@ struct NoteView: View {
                     .overlay {
                         if overlapState.hasOverlap {
                             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                .stroke(Color.white.opacity(0.78), lineWidth: 1)
+                                .strokeBorder(Color.white.opacity(0.72), lineWidth: 0.75, antialiased: true)
                         }
                     }
 
-                NoteRichTextEditor(store: store, theme: theme)
-                    .padding(.horizontal, 22)
-                    .padding(.top, 22)
-                    .padding(.bottom, 20)
-            }
-            .onHover { hovering in
-                setNoteHovering(hovering)
-            }
-            .frame(height: max(0, geometry.size.height - Self.toolbarHeight), alignment: .bottom)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                VStack(spacing: 0) {
+                    header(width: geometry.size.width)
 
-            if shouldShowControls && geometry.size.width >= Self.toolbarMinimumVisibleWidth {
-                NoteHoverControls(store: store, theme: theme, newNote: newNote, deleteNote: deleteNote, collapse: collapse)
-                    .padding(.trailing, 8)
-                    .frame(maxWidth: .infinity, maxHeight: Self.toolbarHeight, alignment: .topTrailing)
-                    .onHover { hovering in
-                        setControlsHovering(hovering)
-                    }
+                    NoteRichTextEditor(store: store, theme: theme)
+                        .padding(.horizontal, 22)
+                        .padding(.top, 8)
+                        .padding(.bottom, 20)
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
             }
-
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(.clear)
     }
 
-    private var shouldShowControls: Bool {
-        isNoteHovering || isControlsHovering
-    }
-
-    private func setNoteHovering(_ hovering: Bool) {
-        withAnimation(.easeOut(duration: 0.14)) {
-            isNoteHovering = hovering
+    @ViewBuilder
+    private func header(width: CGFloat) -> some View {
+        HStack {
+            Spacer(minLength: 8)
+            if width >= Self.toolbarMinimumVisibleWidth {
+                NoteHoverControls(store: store, theme: theme, newNote: newNote, deleteNote: deleteNote, collapse: collapse)
+            } else {
+                HeaderOverflowDots(color: theme.foregroundColor)
+            }
         }
+        .frame(height: Self.toolbarHeight)
+        .padding(.horizontal, 8)
     }
+}
 
-    private func setControlsHovering(_ hovering: Bool) {
-        withAnimation(.easeOut(duration: 0.14)) {
-            isControlsHovering = hovering
+private struct HeaderOverflowDots: View {
+    let color: Color
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(0..<4, id: \.self) { _ in
+                Circle()
+                    .fill(color.opacity(0.72))
+                    .frame(width: 5, height: 5)
+            }
         }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 7)
+        .background(color.opacity(0.08), in: Capsule())
+        .overlay(Capsule().stroke(color.opacity(0.16), lineWidth: 1))
     }
 }
 
@@ -107,16 +116,19 @@ private struct NoteHoverControls: View {
             Button(action: collapse) {
                 Image(systemName: "circle.fill")
             }
+            .onHover { isHovering in
+                if isHovering {
+                    NSCursor.arrow.set()
+                }
+            }
         }
         .font(.system(size: 13, weight: .semibold))
         .buttonStyle(.plain)
         .foregroundStyle(theme.foregroundColor)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
-        .background(theme.backgroundColor, in: Capsule())
-        .overlay(
-            Capsule().stroke(theme.foregroundColor.opacity(0.22), lineWidth: 1)
-        )
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(theme.foregroundColor.opacity(0.08), in: Capsule())
+        .overlay(Capsule().stroke(theme.foregroundColor.opacity(0.18), lineWidth: 1))
     }
 
     private var themeMenu: some View {
@@ -254,6 +266,7 @@ struct DotView: View {
     @ObservedObject var store: NoteStore
     @ObservedObject var overlapState: NoteOverlapState
     let expand: () -> Void
+    let dragEnded: () -> Void
 
     private var theme: NoteTheme {
         BuiltInThemes.theme(id: store.note.themeID)
@@ -266,14 +279,14 @@ struct DotView: View {
                 .overlay {
                     if overlapState.hasOverlap {
                         Circle()
-                            .stroke(Color.white.opacity(0.82), lineWidth: 1)
+                            .strokeBorder(Color.white.opacity(0.76), lineWidth: 0.75, antialiased: true)
                     }
                 }
-                .frame(width: 24, height: 24)
-            DotInteractionView(store: store, expand: expand)
-                .frame(width: 28, height: 28)
+                .frame(width: NoteView.collapsedDotVisualSize, height: NoteView.collapsedDotVisualSize)
+            DotInteractionView(expand: expand, dragEnded: dragEnded)
+                .frame(width: NoteView.collapsedDotHitSize, height: NoteView.collapsedDotHitSize)
         }
-        .frame(width: 28, height: 28)
+        .frame(width: NoteView.collapsedDotHitSize, height: NoteView.collapsedDotHitSize)
     }
 }
 
@@ -282,29 +295,30 @@ final class NoteOverlapState: ObservableObject {
 }
 
 private struct DotInteractionView: NSViewRepresentable {
-    @ObservedObject var store: NoteStore
     let expand: () -> Void
+    let dragEnded: () -> Void
 
     func makeNSView(context: Context) -> DotInteractionNSView {
-        DotInteractionNSView(store: store, expand: expand)
+        DotInteractionNSView(expand: expand, dragEnded: dragEnded)
     }
 
     func updateNSView(_ nsView: DotInteractionNSView, context: Context) {
-        nsView.store = store
         nsView.expand = expand
+        nsView.dragEnded = dragEnded
     }
 }
 
 private final class DotInteractionNSView: NSView {
-    var store: NoteStore
     var expand: () -> Void
+    var dragEnded: () -> Void
+
     private var startOrigin = CGPoint.zero
     private var startScreenPoint = CGPoint.zero
     private var didDrag = false
 
-    init(store: NoteStore, expand: @escaping () -> Void) {
-        self.store = store
+    init(expand: @escaping () -> Void, dragEnded: @escaping () -> Void) {
         self.expand = expand
+        self.dragEnded = dragEnded
         super.init(frame: .zero)
     }
 
@@ -312,7 +326,13 @@ private final class DotInteractionNSView: NSView {
         fatalError("init(coder:) has not been implemented")
     }
 
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(bounds, cursor: .arrow)
+    }
+
     override func mouseDown(with event: NSEvent) {
+        window?.makeKey()
         startOrigin = window?.frame.origin ?? .zero
         startScreenPoint = NSEvent.mouseLocation
         didDrag = false
@@ -321,17 +341,22 @@ private final class DotInteractionNSView: NSView {
     override func mouseDragged(with event: NSEvent) {
         guard let window else { return }
         let current = NSEvent.mouseLocation
-        let delta = CGPoint(x: current.x - startScreenPoint.x, y: current.y - startScreenPoint.y)
-        if hypot(delta.x, delta.y) > 3 {
-            didDrag = true
-        }
-        window.setFrameOrigin(CGPoint(x: startOrigin.x + delta.x, y: startOrigin.y + delta.y))
+        let delta = CGPoint(
+            x: current.x - startScreenPoint.x,
+            y: current.y - startScreenPoint.y
+        )
+        guard didDrag || hypot(delta.x, delta.y) > 9 else { return }
+        didDrag = true
+        window.setFrameOrigin(CGPoint(
+            x: startOrigin.x + delta.x,
+            y: startOrigin.y + delta.y
+        ))
     }
 
     override func mouseUp(with event: NSEvent) {
-        guard let window else { return }
-        store.updateCollapsedOrigin(window.frame.origin)
-        if !didDrag {
+        if didDrag {
+            dragEnded()
+        } else {
             expand()
         }
     }
