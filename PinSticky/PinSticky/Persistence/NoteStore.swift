@@ -123,7 +123,7 @@ final class NoteStore: ObservableObject {
             x: visible.minX + 140 + CGFloat(offset % 8) * 28,
             y: visible.maxY - 320 - CGFloat(offset % 8) * 28
         )
-        var note = StickerNote.fresh(origin: origin)
+        var note = StickerNote.fresh(origin: origin, language: savedLanguage())
         if let source {
             note.themeID = source.themeID
             note.displayMode = source.displayMode

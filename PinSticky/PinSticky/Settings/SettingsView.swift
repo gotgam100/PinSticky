@@ -13,13 +13,15 @@ struct SettingsView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                Text("PinSticky")
-                    .font(.system(size: 28, weight: .bold, design: .rounded))
+            VStack(alignment: .leading, spacing: 14) {
+                Text("Pin Sticky - 앱마다 붙이는 메모")
+                    .font(.custom("Paperlogy-7Bold", size: 22))
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
 
                 Divider()
 
-                VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: 8) {
                     Text(language.text(.language))
                         .font(.headline)
 
@@ -41,64 +43,78 @@ struct SettingsView: View {
 
                 Divider()
 
-                VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 10) {
                     Text(language.text(.defaultNewNote))
                         .font(.headline)
 
-                    Picker(language.text(.defaultBackground), selection: Binding(
-                        get: { selectedThemeID },
-                        set: {
-                            selectedThemeID = $0
-                            NoteStore.saveDefaultThemeID($0)
-                            onChange?()
-                        }
-                    )) {
-                        ForEach(BuiltInThemes.all) { theme in
-                            HStack {
-                                Circle()
-                                    .fill(theme.backgroundColor)
-                                    .frame(width: 10, height: 10)
-                                Text(theme.displayName(language: language))
+                    settingsRow(title: language.text(.defaultBackground)) {
+                        Picker(language.text(.defaultBackground), selection: Binding(
+                            get: { selectedThemeID },
+                            set: {
+                                selectedThemeID = $0
+                                NoteStore.saveDefaultThemeID($0)
+                                onChange?()
                             }
-                            .tag(theme.id)
+                        )) {
+                            ForEach(BuiltInThemes.all) { theme in
+                                HStack {
+                                    Circle()
+                                        .fill(theme.backgroundColor)
+                                        .frame(width: 10, height: 10)
+                                    Text(theme.displayName(language: language))
+                                }
+                                .tag(theme.id)
+                            }
                         }
+                        .labelsHidden()
                     }
-                    .labelsHidden()
 
-                    Picker(language.text(.defaultTextColor), selection: Binding(
-                        get: { selectedTextColor },
-                        set: {
-                            selectedTextColor = $0
-                            NoteStore.saveDefaultTextColor($0 < 0 ? nil : UInt32($0))
-                            onChange?()
-                        }
-                    )) {
-                        Text(language.text(.systemTextColor)).tag(-1)
-                        ForEach(SettingsTextColorOption.all) { option in
-                            HStack {
-                                Circle()
-                                    .fill(Color(hex: option.color))
-                                    .frame(width: 10, height: 10)
-                                Text(option.title(language: language))
+                    settingsRow(title: language.text(.defaultTextColor)) {
+                        Picker(language.text(.defaultTextColor), selection: Binding(
+                            get: { selectedTextColor },
+                            set: {
+                                selectedTextColor = $0
+                                NoteStore.saveDefaultTextColor($0 < 0 ? nil : UInt32($0))
+                                onChange?()
                             }
-                            .tag(Int(option.color))
+                        )) {
+                            Text(language.text(.systemTextColor)).tag(-1)
+                            ForEach(SettingsTextColorOption.all) { option in
+                                HStack {
+                                    Circle()
+                                        .fill(Color(hex: option.color))
+                                        .frame(width: 10, height: 10)
+                                    Text(option.title(language: language))
+                                }
+                                .tag(Int(option.color))
+                            }
                         }
+                        .labelsHidden()
                     }
-                    .labelsHidden()
                 }
 
                 Divider()
 
-                VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: 8) {
                     Button(language.text(.termsAndPolicies)) {}
                         .disabled(true)
                     Button(language.text(.developerApps)) {}
                         .disabled(true)
                 }
             }
-            .padding(26)
+            .padding(22)
         }
-        .frame(minWidth: 460, minHeight: 560)
+        .frame(width: 420, height: 360)
+    }
+
+    private func settingsRow<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
+        HStack {
+            Text(title)
+                .foregroundStyle(.secondary)
+                .frame(width: 82, alignment: .leading)
+            content()
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 }
 

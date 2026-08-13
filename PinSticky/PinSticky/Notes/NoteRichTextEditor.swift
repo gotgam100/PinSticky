@@ -493,6 +493,7 @@ enum PinStickyShortcutKey {
     case cut
     case selectAll
     case newNote
+    case noteList
     case showAll
     case collapseExpand
     case nextTheme
@@ -512,6 +513,7 @@ extension NSEvent {
         case 7: .cut
         case 0: .selectAll
         case 45: .newNote
+        case 37: .noteList
         case 1: .showAll
         case 2: .collapseExpand
         case 17: .nextTheme

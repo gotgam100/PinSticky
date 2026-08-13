@@ -20,6 +20,8 @@
 		111111111111111111111111 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 111111111111111111111011 /* SettingsView.swift */; };
 		111111111111111111111112 /* NoteRichTextEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 111111111111111111111014 /* NoteRichTextEditor.swift */; };
 		111111111111111111111113 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 111111111111111111111015 /* Assets.xcassets */; };
+		111111111111111111111114 /* Paperlogy-7Bold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 111111111111111111111016 /* Paperlogy-7Bold.ttf */; };
+		222222222222222222221101 /* NoteListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 222222222222222222221001 /* NoteListView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -39,6 +41,8 @@
 		111111111111111111111013 /* PinSticky.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = PinSticky.entitlements; sourceTree = "<group>"; };
 		111111111111111111111014 /* NoteRichTextEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteRichTextEditor.swift; sourceTree = "<group>"; };
 		111111111111111111111015 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		111111111111111111111016 /* Paperlogy-7Bold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Paperlogy-7Bold.ttf"; sourceTree = "<group>"; };
+		222222222222222222221001 /* NoteListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteListView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -60,6 +64,7 @@
 				111111111111111111110015 /* Notes */,
 				111111111111111111110016 /* WindowManagement */,
 				111111111111111111110017 /* Settings */,
+				222222222222222222220018 /* Resources */,
 				111111111111111111111015 /* Assets.xcassets */,
 				111111111111111111111012 /* Info.plist */,
 				111111111111111111111013 /* PinSticky.entitlements */,
@@ -132,8 +137,25 @@
 			isa = PBXGroup;
 			children = (
 				111111111111111111111011 /* SettingsView.swift */,
+				222222222222222222221001 /* NoteListView.swift */,
 			);
 			path = Settings;
+			sourceTree = "<group>";
+		};
+		222222222222222222220018 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				222222222222222222220019 /* Fonts */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		222222222222222222220019 /* Fonts */ = {
+			isa = PBXGroup;
+			children = (
+				111111111111111111111016 /* Paperlogy-7Bold.ttf */,
+			);
+			path = Fonts;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -195,6 +217,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				111111111111111111111113 /* Assets.xcassets in Resources */,
+				111111111111111111111114 /* Paperlogy-7Bold.ttf in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -217,6 +240,7 @@
 				111111111111111111111112 /* NoteRichTextEditor.swift in Sources */,
 				111111111111111111111110 /* WindowPlacementManager.swift in Sources */,
 				111111111111111111111111 /* SettingsView.swift in Sources */,
+				222222222222222222221101 /* NoteListView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

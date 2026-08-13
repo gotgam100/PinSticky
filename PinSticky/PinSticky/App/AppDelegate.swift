@@ -12,6 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var activeNoteID: UUID?
     private var statusItem: NSStatusItem?
     private var settingsWindow: NSWindow?
+    private var noteListWindow: NSWindow?
     private var deletedNotesWindow: NSWindow?
     private var localKeyMonitor: Any?
     private var globalKeyMonitor: Any?
@@ -75,6 +76,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let noteStore = NoteStore.makeNew(offset: stores.count, inheriting: note, themeID: themeID)
         stores.append(noteStore)
         show(store: noteStore, forceVisible: noteStore.note.displayMode == .always || isShowingAllNotesUntilAppSwitch)
+        updateNoteListWindowContent()
         NSApp.activate()
     }
 
@@ -105,14 +107,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func closeNote() {
-        activeController?.hide()
+        guard let noteID = activeController?.store.note.id else { return }
+        deleteNote(id: noteID)
     }
 
     @objc private func closeAllNotes() {
         guard confirm(message: language.text(.closeAllNotesConfirmation)) else { return }
         isShowingAllNotesUntilAppSwitch = false
-        noteWindowControllers.values.forEach { $0.hide() }
-        refreshOverlapOutlines()
+        stores.map(\.note.id).forEach { deleteNote(id: $0) }
     }
 
     @objc private func clearAllAttachments() {
@@ -123,14 +125,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         refreshNoteVisibilityForVisibleApps()
     }
 
+    @objc private func attachAllNotesToApp(_ sender: NSMenuItem) {
+        guard let application = sender.representedObject as? RunningApplicationInfo else { return }
+        let activeControllers = noteWindowControllers.values.filter { !$0.isUserHidden }
+        guard !activeControllers.isEmpty else { return }
+        activeControllers.forEach { $0.store.attach(to: application) }
+        isShowingAllNotesUntilAppSwitch = false
+        refreshNoteVisibilityForVisibleApps()
+    }
+
     @objc private func quit() {
         NSApp.terminate(nil)
     }
 
     @objc private func showAbout() {
         NSApp.activate()
+        let appIcon = NSApp.applicationIconImage ?? NSImage()
         NSApp.orderFrontStandardAboutPanel(options: [
             .applicationName: "PinSticky",
+            .applicationIcon: appIcon,
             .applicationVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0",
             .version: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "1"
         ])
@@ -145,7 +158,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 500, height: 620),
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: 360),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -158,6 +171,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }))
         window.makeKeyAndOrderFront(nil)
         settingsWindow = window
+    }
+
+    @objc private func showNoteList() {
+        NSApp.activate()
+
+        if let noteListWindow {
+            noteListWindow.makeKeyAndOrderFront(nil)
+            return
+        }
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 480, height: 440),
+            styleMask: [.titled, .closable, .miniaturizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = language.text(.noteList)
+        window.isReleasedWhenClosed = false
+        window.center()
+        updateNoteListWindowContent(window)
+        window.makeKeyAndOrderFront(nil)
+        noteListWindow = window
     }
 
     @objc private func showDeletedNotesRestore() {
@@ -191,9 +226,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         defaultThemeID = NoteStore.savedDefaultThemeID()
         defaultTextColor = NoteStore.savedDefaultTextColor()
         settingsWindow?.title = language.text(.settings)
+        noteListWindow?.title = language.text(.noteList)
         deletedNotesWindow?.title = language.text(.restoreDeletedNotes)
         stores.forEach { $0.updateLanguage(language) }
         configureStatusItem()
+    }
+
+    private func updateNoteListWindowContent(_ window: NSWindow? = nil) {
+        guard let window = window ?? noteListWindow else { return }
+        window.contentView = NSHostingView(rootView: NoteListView(
+            stores: listedStores(),
+            runningApps: runningApplicationOptions(),
+            showNote: { [weak self] store in
+                self?.showListedNote(store)
+            },
+            attachNote: { [weak self] store, application in
+                self?.attachListedNote(store, to: application)
+            },
+            attachNotes: { [weak self] stores, application in
+                self?.attachListedNotes(stores, to: application)
+            },
+            deleteNotes: { [weak self] stores in
+                self?.deleteListedNotes(stores)
+            }
+        ))
+    }
+
+    private func listedStores() -> [NoteStore] {
+        stores.filter { store in
+            noteWindowControllers[store.note.id]?.isUserHidden != true
+        }
     }
 
     private func configureStatusItem() {
@@ -204,19 +266,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.button?.image?.isTemplate = true
 
         let menu = NSMenu()
-        menu.addItem(statusMenuItem(title: language.text(.about), action: #selector(showAbout)))
-        menu.addItem(.separator())
         menu.addItem(newNoteMenuItem())
+        menu.addItem(statusMenuItem(title: language.text(.noteList), action: #selector(showNoteList), keyEquivalent: "l"))
         menu.addItem(statusMenuItem(title: language.text(.showNote), action: #selector(showNote), keyEquivalent: "s"))
+        menu.addItem(.separator())
         menu.addItem(statusMenuItem(title: language.text(.collapseExpand), action: #selector(toggleCollapse), keyEquivalent: "d"))
         menu.addItem(statusMenuItem(title: language.text(.nextTheme), action: #selector(cycleTheme), keyEquivalent: "t"))
         menu.addItem(statusMenuItem(title: language.text(.closeNote), action: #selector(closeNote), keyEquivalent: "w"))
-        menu.addItem(statusMenuItem(title: language.text(.closeAllNotes), action: #selector(closeAllNotes)))
         menu.addItem(.separator())
-        menu.addItem(statusMenuItem(title: language.text(.settings), action: #selector(showSettings), keyEquivalent: ","))
-        menu.addItem(statusMenuItem(title: language.text(.clearAllAttachments), action: #selector(clearAllAttachments)))
         menu.addItem(statusMenuItem(title: language.text(.restoreDeletedNotes), action: #selector(showDeletedNotesRestore)))
         menu.addItem(.separator())
+        menu.addItem(statusMenuItem(title: language.text(.settings), action: #selector(showSettings), keyEquivalent: ","))
+        menu.addItem(statusMenuItem(title: language.text(.about), action: #selector(showAbout)))
         menu.addItem(statusMenuItem(title: language.text(.quit), action: #selector(quit), keyEquivalent: "q"))
 
         item.menu = menu
@@ -364,6 +425,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             refreshOverlapOutlines()
         }
+        updateNoteListWindowContent()
     }
 
     private func restoreDeleted(_ note: StickerNote) {
@@ -373,7 +435,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let restoredStore = NoteStore.makeRestored(note: note)
         stores.append(restoredStore)
         show(store: restoredStore, forceVisible: restoredStore.note.displayMode == .always || isShowingAllNotesUntilAppSwitch)
+        updateNoteListWindowContent()
         NSApp.activate()
+    }
+
+    private func showListedNote(_ store: NoteStore) {
+        guard stores.contains(where: { $0.note.id == store.note.id }) else { return }
+        show(store: store, forceVisible: true)
+        NSApp.activate()
+    }
+
+    private func attachListedNote(_ store: NoteStore, to application: RunningApplicationInfo?) {
+        guard stores.contains(where: { $0.note.id == store.note.id }) else { return }
+        if let application {
+            store.attach(to: application)
+            isShowingAllNotesUntilAppSwitch = false
+        } else {
+            store.setAlwaysVisible()
+        }
+        refreshNoteVisibilityForVisibleApps()
+        updateNoteListWindowContent()
+    }
+
+    private func attachListedNotes(_ selectedStores: [NoteStore], to application: RunningApplicationInfo?) {
+        let activeIDs = Set(stores.map(\.note.id))
+        let storesToUpdate = selectedStores.filter { activeIDs.contains($0.note.id) }
+        guard !storesToUpdate.isEmpty else { return }
+
+        if let application {
+            storesToUpdate.forEach { $0.attach(to: application) }
+            isShowingAllNotesUntilAppSwitch = false
+        } else {
+            storesToUpdate.forEach { $0.setAlwaysVisible() }
+        }
+        refreshNoteVisibilityForVisibleApps()
+        updateNoteListWindowContent()
+    }
+
+    private func deleteListedNotes(_ selectedStores: [NoteStore]) {
+        let activeIDs = Set(stores.map(\.note.id))
+        let noteIDsToDelete = selectedStores
+            .map(\.note.id)
+            .filter { activeIDs.contains($0) }
+        guard !noteIDsToDelete.isEmpty else { return }
+
+        noteIDsToDelete.forEach { deleteNote(id: $0) }
     }
 
     private var activeController: NoteWindowController? {
@@ -505,6 +611,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return item
     }
 
+    private func allNotesPinningMenuItem() -> NSMenuItem {
+        let item = NSMenuItem(title: language.text(.allNotesPinMenu), action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
+
+        let alwaysItem = NSMenuItem(title: language.text(.alwaysVisible), action: #selector(clearAllAttachments), keyEquivalent: "")
+        alwaysItem.target = self
+        submenu.addItem(alwaysItem)
+
+        let applications = runningApplicationOptions()
+        if !applications.isEmpty {
+            submenu.addItem(.separator())
+        }
+
+        applications.forEach { application in
+            let appItem = NSMenuItem(title: application.name, action: #selector(attachAllNotesToApp(_:)), keyEquivalent: "")
+            appItem.target = self
+            appItem.representedObject = application
+            submenu.addItem(appItem)
+        }
+
+        item.submenu = submenu
+        return item
+    }
+
+    private func runningApplicationOptions() -> [RunningApplicationInfo] {
+        NSWorkspace.shared.runningApplications
+            .compactMap { RunningApplicationInfo(application: $0) }
+            .sorted { $0.name < $1.name }
+    }
+
     private func themeSwatchImage(_ theme: NoteTheme) -> NSImage {
         colorSwatchImage(theme.background)
     }
@@ -568,6 +704,8 @@ private extension AppDelegate {
         switch event.pinStickyShortcutKey {
         case .newNote:
             newNote()
+        case .noteList:
+            showNoteList()
         case .showAll:
             showNote()
         case .collapseExpand:

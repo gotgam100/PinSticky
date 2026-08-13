@@ -88,10 +88,10 @@ struct StickerNote: Codable, Equatable, Identifiable {
         updatedAt: Date()
     )
 
-    static func fresh(origin: CGPoint) -> StickerNote {
+    static func fresh(origin: CGPoint, language: AppLanguage = .korean) -> StickerNote {
         StickerNote(
             id: UUID(),
-            content: "새 메모",
+            content: language.text(.newNote),
             attributedContentData: nil,
             themeID: BuiltInThemes.defaultTheme.id,
             fontSize: 18,
@@ -153,6 +153,26 @@ enum AppLanguage: String, CaseIterable, Equatable {
         switch (self, key) {
         case (.korean, .showNote): "모든 메모 보기"
         case (.english, .showNote): "Show All Notes"
+        case (.korean, .noteList): "메모 관리 및 검색"
+        case (.english, .noteList): "Manage and Search Notes"
+        case (.korean, .searchNotes): "메모 검색"
+        case (.english, .searchNotes): "Search notes"
+        case (.korean, .noSearchResults): "검색 결과가 없습니다."
+        case (.english, .noSearchResults): "No matching notes."
+        case (.korean, .untitledNote): "제목 없는 메모"
+        case (.english, .untitledNote): "Untitled Note"
+        case (.korean, .noteModeShort): "메모"
+        case (.english, .noteModeShort): "Note"
+        case (.korean, .dotModeShort): "작은 원"
+        case (.english, .dotModeShort): "Dot"
+        case (.korean, .selectAll): "전체 선택"
+        case (.english, .selectAll): "Select All"
+        case (.korean, .deselectAll): "선택 해제"
+        case (.english, .deselectAll): "Deselect"
+        case (.korean, .selectedNotesPinMenu): "선택한 메모 종속"
+        case (.english, .selectedNotesPinMenu): "Pin Selected Notes"
+        case (.korean, .pinningStatus): "종속 상태"
+        case (.english, .pinningStatus): "Pinning Status"
         case (.korean, .newNote): "새 메모"
         case (.english, .newNote): "New Note"
         case (.korean, .collapseExpand): "작은 원 / 펼치기"
@@ -167,6 +187,8 @@ enum AppLanguage: String, CaseIterable, Equatable {
         case (.english, .closeAllNotes): "Close All Notes"
         case (.korean, .closeAllNotesConfirmation): "모든 창을 닫으시겠습니까?"
         case (.english, .closeAllNotesConfirmation): "Close all note windows?"
+        case (.korean, .allNotesPinMenu): "모든 메모 종속"
+        case (.english, .allNotesPinMenu): "All Notes App Pinning"
         case (.korean, .clearAllAttachments): "모든 메모 종속 제거"
         case (.english, .clearAllAttachments): "Clear All App Attachments"
         case (.korean, .clearAllAttachmentsConfirmation): "모든 메모의 종속을 제거하시겠습니까?"
@@ -211,10 +233,10 @@ enum AppLanguage: String, CaseIterable, Equatable {
         case (.english, .settings): "Settings"
         case (.korean, .defaultNewNote): "새 메모 기본값"
         case (.english, .defaultNewNote): "New Note Defaults"
-        case (.korean, .defaultBackground): "기본 배경색"
-        case (.english, .defaultBackground): "Default Background"
-        case (.korean, .defaultTextColor): "기본 글자색"
-        case (.english, .defaultTextColor): "Default Text Color"
+        case (.korean, .defaultBackground): "배경색"
+        case (.english, .defaultBackground): "Background"
+        case (.korean, .defaultTextColor): "글자색"
+        case (.english, .defaultTextColor): "Text Color"
         case (.korean, .systemTextColor): "배경색에 맞춤"
         case (.english, .systemTextColor): "Match Background"
         case (.korean, .termsAndPolicies): "이용약관 및 정책"
@@ -256,12 +278,23 @@ enum AppLanguage: String, CaseIterable, Equatable {
 enum AppText {
     case newNote
     case showNote
+    case noteList
+    case searchNotes
+    case noSearchResults
+    case untitledNote
+    case noteModeShort
+    case dotModeShort
+    case selectAll
+    case deselectAll
+    case selectedNotesPinMenu
+    case pinningStatus
     case collapseExpand
     case nextTheme
     case quit
     case closeNote
     case closeAllNotes
     case closeAllNotesConfirmation
+    case allNotesPinMenu
     case clearAllAttachments
     case clearAllAttachmentsConfirmation
     case yes

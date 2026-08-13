@@ -49,7 +49,7 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
             guard let self else { return false }
             switch shortcut {
             case .closeNote:
-                self.hide()
+                self.deleteNote(self.store.note.id)
                 return true
             default:
                 return false

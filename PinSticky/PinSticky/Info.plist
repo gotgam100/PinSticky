@@ -24,10 +24,14 @@
 	<true/>
 	<key>LSMinimumSystemVersion</key>
 	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
+	<key>UIAppFonts</key>
+	<array>
+		<string>Paperlogy-7Bold.ttf</string>
+	</array>
 	<key>NSHumanReadableDescription</key>
 	<string>PinSticky keeps quick floating notes visible while you work.</string>
 	<key>NSHumanReadableCopyright</key>
-	<string>Copyright © 2026 Baekmac. All rights reserved.</string>
+	<string>Copyright © 2026 PinSticky. All rights reserved.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 </dict>
