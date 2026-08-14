@@ -56,15 +56,23 @@ a {
   padding: 18px 0 10px;
 }
 
-.app-mark {
+.app-mark,
+.app-icon {
   width: 54px;
   height: 54px;
-  display: grid;
-  place-items: center;
   margin: 0 auto 12px;
   border-radius: 16px;
+}
+
+.app-mark {
+  display: grid;
+  place-items: center;
   background: linear-gradient(135deg, #ffe85c, #0abf78);
   font-size: 30px;
+}
+
+.app-icon {
+  display: block;
 }
 
 h1 {
