@@ -19,6 +19,8 @@ final class NoteStore: ObservableObject {
     private static let hasLaunchedDefaultsKey = "hasLaunched"
     private static let defaultThemeDefaultsKey = "defaultNewNoteTheme"
     private static let defaultTextColorDefaultsKey = "defaultNewNoteTextColor"
+    private static let defaultOpacityDefaultsKey = "defaultNewNoteOpacity"
+    private static let defaultLiquidGlassDefaultsKey = "defaultNewNoteLiquidGlass"
     private static let supportURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         .appendingPathComponent("PinSticky", isDirectory: true)
     private static let deletedNotesLimit = 20
@@ -113,6 +115,23 @@ final class NoteStore: ObservableObject {
         }
     }
 
+    static func savedDefaultOpacity() -> Double {
+        guard UserDefaults.standard.object(forKey: defaultOpacityDefaultsKey) != nil else { return 1 }
+        return StickerNote.clampedOpacity(UserDefaults.standard.double(forKey: defaultOpacityDefaultsKey))
+    }
+
+    static func saveDefaultOpacity(_ opacity: Double) {
+        UserDefaults.standard.set(StickerNote.clampedOpacity(opacity), forKey: defaultOpacityDefaultsKey)
+    }
+
+    static func savedDefaultLiquidGlassEnabled() -> Bool {
+        UserDefaults.standard.bool(forKey: defaultLiquidGlassDefaultsKey)
+    }
+
+    static func saveDefaultLiquidGlassEnabled(_ isEnabled: Bool) {
+        UserDefaults.standard.set(isEnabled, forKey: defaultLiquidGlassDefaultsKey)
+    }
+
     static func makeNew(offset: Int) -> NoteStore {
         makeNew(offset: offset, inheriting: nil)
     }
@@ -121,12 +140,15 @@ final class NoteStore: ObservableObject {
         offset: Int,
         inheriting source: StickerNote?,
         themeID selectedThemeID: String? = nil,
-        centeredAt centerPoint: CGPoint? = nil
+        centeredAt centerPoint: CGPoint? = nil,
+        near sourceFrame: CGRect? = nil
     ) -> NoteStore {
-        let size = CGSize(width: 320, height: 260)
-        let visible = bestVisibleFrame(for: centerPoint)
+        let size = sourceFrame?.size ?? CGSize(width: 320, height: 260)
+        let visible = bestVisibleFrame(for: centerPoint ?? sourceFrame?.center)
         let origin: CGPoint
-        if let centerPoint {
+        if let sourceFrame {
+            origin = siblingOrigin(for: sourceFrame, size: size, visible: visible)
+        } else if let centerPoint {
             origin = clampedOrigin(
                 CGPoint(x: centerPoint.x - size.width / 2, y: centerPoint.y - size.height / 2),
                 size: size,
@@ -139,14 +161,28 @@ final class NoteStore: ObservableObject {
             )
         }
         var note = StickerNote.fresh(origin: origin, language: savedLanguage())
+        note.expandedFrame = CodableRect(
+            x: Double(origin.x),
+            y: Double(origin.y),
+            width: Double(size.width),
+            height: Double(size.height)
+        )
+        note.collapsedOrigin = CodablePoint(
+            x: Double(origin.x + size.width / 2 - 14),
+            y: Double(origin.y + size.height / 2 - 14)
+        )
         if let source {
             note.themeID = source.themeID
+            note.opacity = source.opacity
+            note.usesLiquidGlass = source.usesLiquidGlass
             note.displayMode = source.displayMode
             note.attachedAppName = source.attachedAppName
             note.attachedBundleIdentifier = source.attachedBundleIdentifier
         } else {
             let themeID = selectedThemeID ?? savedDefaultThemeID()
             note.themeID = BuiltInThemes.theme(id: themeID).id
+            note.opacity = savedDefaultOpacity()
+            note.usesLiquidGlass = savedDefaultLiquidGlassEnabled()
             if let textColor = savedDefaultTextColor() {
                 note.attributedContentData = attributedContentData(
                     content: note.content,
@@ -156,6 +192,29 @@ final class NoteStore: ObservableObject {
             }
         }
         return NoteStore(note: note, fileURL: fileURL(for: note.id))
+    }
+
+    private static func siblingOrigin(for sourceFrame: CGRect, size: CGSize, visible: CGRect) -> CGPoint {
+        let gap: CGFloat = 24
+        let candidates = [
+            CGPoint(x: sourceFrame.maxX + gap, y: sourceFrame.minY),
+            CGPoint(x: sourceFrame.minX - size.width - gap, y: sourceFrame.minY),
+            CGPoint(x: sourceFrame.minX + gap, y: sourceFrame.minY - size.height - gap),
+            CGPoint(x: sourceFrame.minX + gap, y: sourceFrame.maxY + gap),
+            CGPoint(x: sourceFrame.minX + 36, y: sourceFrame.minY - 36)
+        ]
+
+        if let fittingOrigin = candidates.first(where: { origin in
+            visible.contains(CGRect(origin: origin, size: size))
+        }) {
+            return fittingOrigin
+        }
+
+        return clampedOrigin(
+            CGPoint(x: sourceFrame.minX + 36, y: sourceFrame.minY - 36),
+            size: size,
+            visible: visible
+        )
     }
 
     private static func bestVisibleFrame(for point: CGPoint?) -> CGRect {
@@ -255,24 +314,19 @@ final class NoteStore: ObservableObject {
     }
 
     func updateContent(_ content: String) {
-        guard note.content != content else { return }
+        guard note.content != content || note.attributedContentData != nil else { return }
         mutateNote { note in
             note.content = content
+            note.attributedContentData = nil
         }
     }
 
     func updateAttributedContent(_ attributedString: NSAttributedString) {
-        let fullRange = NSRange(location: 0, length: attributedString.length)
-        let data = try? attributedString.data(
-            from: fullRange,
-            documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]
-        )
         let plainText = attributedString.string
-
-        guard note.content != plainText || note.attributedContentData != data else { return }
+        guard note.content != plainText || note.attributedContentData != nil else { return }
         mutateNote { note in
             note.content = plainText
-            note.attributedContentData = data
+            note.attributedContentData = nil
         }
     }
 
@@ -299,6 +353,21 @@ final class NoteStore: ObservableObject {
         guard note.fontSize != clampedFontSize else { return }
         mutateNote { note in
             note.fontSize = clampedFontSize
+        }
+    }
+
+    func updateOpacity(_ opacity: Double) {
+        let clampedOpacity = StickerNote.clampedOpacity(opacity)
+        guard note.opacity != clampedOpacity else { return }
+        mutateNote { note in
+            note.opacity = clampedOpacity
+        }
+    }
+
+    func updateLiquidGlassEnabled(_ isEnabled: Bool) {
+        guard note.usesLiquidGlass != isEnabled else { return }
+        mutateNote { note in
+            note.usesLiquidGlass = isEnabled
         }
     }
 
@@ -390,6 +459,90 @@ final class NoteStore: ObservableObject {
         mutation(&nextNote)
         nextNote.updatedAt = Date()
         note = nextNote
+    }
+}
+
+extension NSAttributedString {
+    func pinStickySanitized(fontSize: Double, textColor: UInt32) -> NSAttributedString {
+        let sanitized = NSMutableAttributedString(attributedString: self)
+        let fullRange = NSRange(location: 0, length: sanitized.length)
+        guard fullRange.length > 0 else { return sanitized }
+
+        let defaultColor = NSColor(hex: textColor)
+        sanitized.enumerateAttributes(in: fullRange) { attributes, range, _ in
+            if let font = attributes[.font] as? NSFont {
+                sanitized.addAttribute(.font, value: font.pinStickyFontPreservingTraits(fontSize: fontSize), range: range)
+            } else {
+                sanitized.addAttribute(.font, value: NSFont.systemFont(ofSize: fontSize, weight: .medium), range: range)
+            }
+
+            if attributes[.foregroundColor] == nil {
+                sanitized.addAttribute(.foregroundColor, value: defaultColor, range: range)
+            }
+
+            sanitized.addAttribute(.kern, value: 0, range: range)
+            sanitized.removeAttribute(.backgroundColor, range: range)
+            sanitized.removeAttribute(.baselineOffset, range: range)
+            sanitized.removeAttribute(.superscript, range: range)
+            sanitized.removeAttribute(.link, range: range)
+            sanitized.removeAttribute(.attachment, range: range)
+            sanitized.removeAttribute(.shadow, range: range)
+            sanitized.removeAttribute(.obliqueness, range: range)
+            sanitized.removeAttribute(.expansion, range: range)
+            sanitized.removeAttribute(.writingDirection, range: range)
+            sanitized.removeAttribute(.verticalGlyphForm, range: range)
+        }
+
+        let string = sanitized.string as NSString
+        var location = 0
+        while location < string.length {
+            let paragraphRange = string.paragraphRange(for: NSRange(location: location, length: 0))
+            let existingStyle = sanitized.attribute(.paragraphStyle, at: paragraphRange.location, effectiveRange: nil) as? NSParagraphStyle
+            sanitized.addAttribute(
+                .paragraphStyle,
+                value: existingStyle.pinStickyNormalized(fontSize: fontSize),
+                range: paragraphRange
+            )
+            location = NSMaxRange(paragraphRange)
+        }
+
+        return sanitized
+    }
+}
+
+private extension NSFont {
+    func pinStickyFontPreservingTraits(fontSize: Double) -> NSFont {
+        let traits = NSFontManager.shared.traits(of: self)
+        var font = NSFont.systemFont(ofSize: fontSize, weight: traits.contains(.boldFontMask) ? .bold : .medium)
+        if traits.contains(.italicFontMask) {
+            font = NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask)
+        }
+        return font
+    }
+}
+
+private extension Optional where Wrapped == NSParagraphStyle {
+    func pinStickyNormalized(fontSize: Double) -> NSParagraphStyle {
+        let normalized = NSMutableParagraphStyle()
+        normalized.alignment = self?.alignment ?? .natural
+        normalized.baseWritingDirection = self?.baseWritingDirection ?? .natural
+        let defaultLineSpacing = CGFloat(fontSize * 0.20)
+        let existingLineSpacing = self?.lineSpacing ?? defaultLineSpacing
+        normalized.lineSpacing = existingLineSpacing.isFinite
+            ? min(max(existingLineSpacing, 0), CGFloat(fontSize * 0.55))
+            : defaultLineSpacing
+        normalized.paragraphSpacing = 0
+        normalized.paragraphSpacingBefore = 0
+        normalized.lineHeightMultiple = 0
+        normalized.minimumLineHeight = 0
+        normalized.maximumLineHeight = 0
+        return normalized
+    }
+}
+
+private extension CGRect {
+    var center: CGPoint {
+        CGPoint(x: midX, y: midY)
     }
 }
 

@@ -1,17 +1,23 @@
 import AppKit
 import SwiftUI
 
+enum NoteCharacterAttributeAction: String {
+    case bold
+    case underline
+    case strikethrough
+}
+
+extension Notification.Name {
+    static let pinStickyCharacterAttributeRequested = Notification.Name("pinStickyCharacterAttributeRequested")
+    static let pinStickyCharacterAttributeStateChanged = Notification.Name("pinStickyCharacterAttributeStateChanged")
+}
+
 struct NoteRichTextEditor: NSViewRepresentable {
     @ObservedObject var store: NoteStore
     let theme: NoteTheme
 
-    func makeNSView(context: Context) -> NSScrollView {
-        let scrollView = NSScrollView()
-        scrollView.drawsBackground = false
-        scrollView.borderType = .noBorder
-        scrollView.hasVerticalScroller = true
-        scrollView.autohidesScrollers = true
-
+    func makeNSView(context: Context) -> PinStickyTextEditorContainer {
+        let container = PinStickyTextEditorContainer()
         let textView = ContextMenuTextView()
         textView.owner = context.coordinator
         textView.drawsBackground = false
@@ -33,20 +39,22 @@ struct NoteRichTextEditor: NSViewRepresentable {
         ]
         textView.textContainerInset = NSSize(width: 0, height: 0)
         textView.textContainer?.lineFragmentPadding = 0
+        textView.layoutManager?.allowsNonContiguousLayout = false
         textView.delegate = context.coordinator
-        textView.autoresizingMask = [.width]
+        textView.autoresizingMask = [.width, .height]
         textView.minSize = NSSize(width: 0, height: 0)
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-        textView.isVerticallyResizable = true
+        textView.isVerticallyResizable = false
         textView.isHorizontallyResizable = false
 
-        scrollView.documentView = textView
+        container.textView = textView
         context.coordinator.textView = textView
         context.coordinator.apply(note: store.note, theme: theme)
-        return scrollView
+        return container
     }
 
-    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+    func updateNSView(_ container: PinStickyTextEditorContainer, context: Context) {
+        container.configureTextLayout()
         context.coordinator.apply(note: store.note, theme: theme)
     }
 
@@ -62,10 +70,21 @@ struct NoteRichTextEditor: NSViewRepresentable {
         private var lastAppliedNoteID: UUID?
         private var lastAppliedThemeID: String?
         private var lastAppliedFontSize: Double?
-        private var lastAppliedAttributedContentData: Data?
+        private var lastAppliedContent: String?
 
         init(store: NoteStore) {
             self.store = store
+            super.init()
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(handleCharacterAttributeNotification(_:)),
+                name: .pinStickyCharacterAttributeRequested,
+                object: nil
+            )
+        }
+
+        deinit {
+            NotificationCenter.default.removeObserver(self)
         }
 
         func apply(note: StickerNote, theme: NoteTheme) {
@@ -74,35 +93,51 @@ struct NoteRichTextEditor: NSViewRepresentable {
             let noteIdentityChanged = lastAppliedNoteID != note.id
             let themeChanged = lastAppliedThemeID != note.themeID
             let fontSizeChanged = lastAppliedFontSize != note.fontSize
-            let externalContentChanged = lastAppliedAttributedContentData != note.attributedContentData
-                && !textView.isFirstResponderInWindow
+            let contentChanged = lastAppliedContent != note.content
 
-            guard noteIdentityChanged || themeChanged || fontSizeChanged || externalContentChanged else { return }
+            guard noteIdentityChanged || themeChanged || fontSizeChanged || contentChanged else { return }
 
             isApplying = true
             let selectedRange = textView.selectedRange()
-            let attributed = note.makeAttributedString(theme: theme)
-            textView.textStorage?.setAttributedString(attributed)
-            textView.typingAttributes = [
+            let defaultAttributes: [NSAttributedString.Key: Any] = [
                 .font: NSFont.systemFont(ofSize: note.fontSize, weight: .medium),
                 .foregroundColor: NSColor(hex: theme.foreground),
-                .paragraphStyle: NSParagraphStyle.pinStickyDefault(fontSize: note.fontSize)
+                .paragraphStyle: NSParagraphStyle.pinStickyDefault(fontSize: note.fontSize),
+                .kern: 0
             ]
-            textView.setSelectedRange(NSRange(
-                location: min(selectedRange.location, attributed.length),
-                length: min(selectedRange.length, max(0, attributed.length - min(selectedRange.location, attributed.length)))
-            ))
+            textView.typingAttributes = defaultAttributes
+            textView.defaultParagraphStyle = NSParagraphStyle.pinStickyDefault(fontSize: note.fontSize)
+            textView.font = NSFont.systemFont(ofSize: note.fontSize, weight: .medium)
+            textView.textColor = NSColor(hex: theme.foreground)
+
+            if noteIdentityChanged || (!textView.isFirstResponderInWindow && textView.string != note.content) {
+                let attributed = NSAttributedString(string: note.content, attributes: defaultAttributes)
+                textView.textStorage?.setAttributedString(attributed)
+                textView.setSelectedRange(NSRange(
+                    location: min(selectedRange.location, attributed.length),
+                    length: min(selectedRange.length, max(0, attributed.length - min(selectedRange.location, attributed.length)))
+                ))
+            } else if themeChanged || fontSizeChanged {
+                let fullRange = NSRange(location: 0, length: textView.textStorage?.length ?? 0)
+                if fullRange.length > 0 {
+                    textView.textStorage?.addAttributes(defaultAttributes, range: fullRange)
+                }
+            }
+
             lastAppliedNoteID = note.id
             lastAppliedThemeID = note.themeID
             lastAppliedFontSize = note.fontSize
-            lastAppliedAttributedContentData = note.attributedContentData
+            lastAppliedContent = note.content
             isApplying = false
         }
 
         func textDidChange(_ notification: Notification) {
-            guard !isApplying, let textView, let storage = textView.textStorage else { return }
-            store.updateAttributedContent(storage)
-            lastAppliedAttributedContentData = store.note.attributedContentData
+            guard !isApplying, let textView else { return }
+            let content = textView.string
+            store.updateContent(content)
+            lastAppliedContent = content
+            (textView.superview as? PinStickyTextEditorContainer)?.configureTextLayout()
+            publishCharacterAttributeState()
         }
 
         func convertSelectionToTodo() {
@@ -125,9 +160,8 @@ struct NoteRichTextEditor: NSViewRepresentable {
                 .joined(separator: "\n")
 
             textView.insertText(converted, replacementRange: targetRange)
-            if let storage = textView.textStorage {
-                store.updateAttributedContent(storage)
-            }
+            store.updateContent(textView.string)
+            lastAppliedContent = textView.string
         }
 
         func removeTodoFormatFromSelection() {
@@ -149,9 +183,8 @@ struct NoteRichTextEditor: NSViewRepresentable {
                 .joined(separator: "\n")
 
             textView.insertText(converted, replacementRange: targetRange)
-            if let storage = textView.textStorage {
-                store.updateAttributedContent(storage)
-            }
+            store.updateContent(textView.string)
+            lastAppliedContent = textView.string
         }
 
         func applyTextColor(_ color: NSColor) {
@@ -164,7 +197,12 @@ struct NoteRichTextEditor: NSViewRepresentable {
             }
 
             storage.addAttribute(.foregroundColor, value: color, range: targetRange)
-            store.updateAttributedContent(storage)
+            store.updateContent(textView.string)
+            lastAppliedContent = textView.string
+        }
+
+        func toggleBold() {
+            applyBold(enabled: !currentCharacterAttributeState().bold)
         }
 
         func toggleUnderline() {
@@ -175,21 +213,55 @@ struct NoteRichTextEditor: NSViewRepresentable {
             applyCharacterAttribute(.strikethroughStyle, enabledValue: NSUnderlineStyle.single.rawValue)
         }
 
-        func toggleItalic() {
+        @objc private func handleCharacterAttributeNotification(_ notification: Notification) {
+            guard let noteID = notification.userInfo?["noteID"] as? UUID,
+                  noteID == store.note.id,
+                  let rawAction = notification.userInfo?["action"] as? String,
+                  let action = NoteCharacterAttributeAction(rawValue: rawAction) else {
+                return
+            }
+
+            textView?.window?.makeKey()
+            textView?.window?.makeFirstResponder(textView)
+
+            switch action {
+            case .bold:
+                toggleBold()
+            case .underline:
+                toggleUnderline()
+            case .strikethrough:
+                toggleStrikethrough()
+            }
+        }
+
+        func textViewDidChangeSelection(_ notification: Notification) {
+            publishCharacterAttributeState()
+        }
+
+        private func applyBold(enabled: Bool) {
             guard let textView, let storage = textView.textStorage else { return }
             let selectedRange = textView.selectedRange()
             let targetRange = selectedRange.length > 0 ? selectedRange : textView.rangeForUserCharacterAttributeChange
-            guard targetRange.length > 0 else { return }
+            guard targetRange.length > 0 else {
+                textView.typingAttributes[.font] = NSFont.systemFont(
+                    ofSize: store.note.fontSize,
+                    weight: enabled ? .bold : .medium
+                )
+                publishCharacterAttributeState()
+                return
+            }
 
             storage.enumerateAttribute(.font, in: targetRange) { value, range, _ in
                 let font = (value as? NSFont) ?? NSFont.systemFont(ofSize: store.note.fontSize, weight: .medium)
-                let traits = NSFontManager.shared.traits(of: font)
-                let nextFont = traits.contains(.italicFontMask)
-                    ? NSFontManager.shared.convert(font, toNotHaveTrait: .italicFontMask)
-                    : NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask)
+                let nextFont = NSFont.systemFont(
+                    ofSize: font.pointSize,
+                    weight: enabled ? .bold : .medium
+                )
                 storage.addAttribute(.font, value: nextFont, range: range)
             }
-            store.updateAttributedContent(storage)
+            store.updateContent(textView.string)
+            lastAppliedContent = textView.string
+            publishCharacterAttributeState()
         }
 
         func applyLineSpacing(_ spacing: LineSpacingOption) {
@@ -201,22 +273,69 @@ struct NoteRichTextEditor: NSViewRepresentable {
             style.lineSpacing = spacing.value(fontSize: store.note.fontSize)
             storage.addAttribute(.paragraphStyle, value: style, range: paragraphRange)
             textView.typingAttributes[.paragraphStyle] = style
-            store.updateAttributedContent(storage)
+            store.updateContent(textView.string)
+            lastAppliedContent = textView.string
         }
 
         private func applyCharacterAttribute(_ key: NSAttributedString.Key, enabledValue: Int) {
             guard let textView, let storage = textView.textStorage else { return }
             let selectedRange = textView.selectedRange()
             let targetRange = selectedRange.length > 0 ? selectedRange : textView.rangeForUserCharacterAttributeChange
-            guard targetRange.length > 0 else { return }
+            guard targetRange.length > 0 else {
+                let isEnabled = currentCharacterAttributeState().isEnabled(for: key)
+                if isEnabled {
+                    textView.typingAttributes.removeValue(forKey: key)
+                } else {
+                    textView.typingAttributes[key] = enabledValue
+                }
+                publishCharacterAttributeState()
+                return
+            }
 
-            let currentValue = storage.attribute(key, at: targetRange.location, effectiveRange: nil) as? Int
-            if currentValue == enabledValue {
+            if currentCharacterAttributeState().isEnabled(for: key) {
                 storage.removeAttribute(key, range: targetRange)
             } else {
                 storage.addAttribute(key, value: enabledValue, range: targetRange)
             }
-            store.updateAttributedContent(storage)
+            store.updateContent(textView.string)
+            lastAppliedContent = textView.string
+            publishCharacterAttributeState()
+        }
+
+        private func currentCharacterAttributeState() -> CharacterAttributeState {
+            guard let textView else { return CharacterAttributeState() }
+            return textView.currentCharacterAttributeState
+        }
+
+        private func publishCharacterAttributeState() {
+            let state = currentCharacterAttributeState()
+            NotificationCenter.default.post(
+                name: .pinStickyCharacterAttributeStateChanged,
+                object: nil,
+                userInfo: [
+                    "noteID": store.note.id,
+                    "bold": state.bold,
+                    "underline": state.underline,
+                    "strikethrough": state.strikethrough
+                ]
+            )
+        }
+    }
+}
+
+struct CharacterAttributeState: Equatable {
+    var bold = false
+    var underline = false
+    var strikethrough = false
+
+    func isEnabled(for key: NSAttributedString.Key) -> Bool {
+        switch key {
+        case .underlineStyle:
+            return underline
+        case .strikethroughStyle:
+            return strikethrough
+        default:
+            return false
         }
     }
 }
@@ -232,36 +351,22 @@ final class ContextMenuTextView: NSTextView {
             return
         }
 
-        let theme = BuiltInThemes.theme(id: owner.store.note.themeID)
-        let note = owner.store.note
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: note.fontSize, weight: .medium),
-            .foregroundColor: NSColor(hex: theme.foreground),
-            .paragraphStyle: NSParagraphStyle.pinStickyDefault(fontSize: note.fontSize),
-            .kern: 0
-        ]
-        let attributed = NSAttributedString(string: plainText, attributes: attributes)
-        let replacementRange = selectedRange()
-        textStorage?.replaceCharacters(in: replacementRange, with: attributed)
-        setSelectedRange(NSRange(location: replacementRange.location + attributed.length, length: 0))
-        if let storage = textStorage {
-            owner.store.updateAttributedContent(storage)
+        typingAttributes = defaultTypingAttributes(for: owner)
+        insertText(normalizedPlainText(plainText), replacementRange: selectedRange())
+    }
+
+    override func insertNewline(_ sender: Any?) {
+        if let owner {
+            typingAttributes = defaultTypingAttributes(for: owner)
         }
+        super.insertNewline(sender)
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
         let menu = NSMenu()
+        menu.allowsContextMenuPlugIns = false
 
         let language = owner?.store.language ?? .korean
-        let isTodo = selectedParagraphsAreTodo()
-        let todoTitle = isTodo ? language.text(.cancelTodo) : language.text(.makeTodo)
-        let todoItem = NSMenuItem(
-            title: todoTitle,
-            action: isTodo ? #selector(removeTodoFormat) : #selector(convertSelectionToTodo),
-            keyEquivalent: ""
-        )
-        todoItem.target = self
-        menu.addItem(todoItem)
 
         let colorTitle = owner?.store.language.text(.textColor) ?? AppLanguage.korean.text(.textColor)
         let colorMenuItem = NSMenuItem(title: colorTitle, action: nil, keyEquivalent: "")
@@ -278,9 +383,25 @@ final class ContextMenuTextView: NSTextView {
 
         let characterItem = NSMenuItem(title: language.text(.characterAttributes), action: nil, keyEquivalent: "")
         let characterMenu = NSMenu()
-        characterMenu.addItem(actionItem(title: language.text(.underline), selector: #selector(toggleUnderline)))
-        characterMenu.addItem(actionItem(title: language.text(.italic), selector: #selector(toggleItalic)))
-        characterMenu.addItem(actionItem(title: language.text(.strikethrough), selector: #selector(toggleStrikethrough)))
+        let characterState = currentCharacterAttributeState
+        characterMenu.addItem(actionItem(
+            title: language.text(.bold),
+            selector: #selector(toggleBold),
+            systemImage: "bold",
+            isChecked: characterState.bold
+        ))
+        characterMenu.addItem(actionItem(
+            title: language.text(.underline),
+            selector: #selector(toggleUnderline),
+            systemImage: "underline",
+            isChecked: characterState.underline
+        ))
+        characterMenu.addItem(actionItem(
+            title: language.text(.strikethrough),
+            selector: #selector(toggleStrikethrough),
+            systemImage: "strikethrough",
+            isChecked: characterState.strikethrough
+        ))
         characterItem.submenu = characterMenu
         menu.addItem(characterItem)
 
@@ -294,6 +415,16 @@ final class ContextMenuTextView: NSTextView {
         }
         paragraphItem.submenu = paragraphMenu
         menu.addItem(paragraphItem)
+
+        let isTodo = selectedParagraphsAreTodo()
+        let todoTitle = isTodo ? language.text(.cancelTodo) : language.text(.makeTodo)
+        let todoItem = NSMenuItem(
+            title: todoTitle,
+            action: isTodo ? #selector(removeTodoFormat) : #selector(convertSelectionToTodo),
+            keyEquivalent: ""
+        )
+        todoItem.target = self
+        menu.addItem(todoItem)
 
         return menu
     }
@@ -379,6 +510,20 @@ final class ContextMenuTextView: NSTextView {
             selectAll(nil)
             return true
         default:
+            break
+        }
+
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard flags == .command else { return false }
+
+        switch event.keyCode {
+        case 11:
+            owner?.toggleBold()
+            return true
+        case 32:
+            owner?.toggleUnderline()
+            return true
+        default:
             return false
         }
     }
@@ -400,8 +545,8 @@ final class ContextMenuTextView: NSTextView {
         owner?.toggleUnderline()
     }
 
-    @objc private func toggleItalic() {
-        owner?.toggleItalic()
+    @objc private func toggleBold() {
+        owner?.toggleBold()
     }
 
     @objc private func toggleStrikethrough() {
@@ -416,19 +561,34 @@ final class ContextMenuTextView: NSTextView {
         owner?.applyLineSpacing(option)
     }
 
-    private func actionItem(title: String, selector: Selector) -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: selector, keyEquivalent: "")
+    private func actionItem(title: String, selector: Selector, systemImage: String, isChecked: Bool = false) -> NSMenuItem {
+        let item = NSMenuItem(title: isChecked ? "\(title)  ✓" : title, action: selector, keyEquivalent: "")
         item.target = self
+        item.state = .off
+        item.image = NSImage(systemSymbolName: systemImage, accessibilityDescription: nil)
         return item
+    }
+
+    private func normalizedPlainText(_ text: String) -> String {
+        text.components(separatedBy: CharacterSet.newlines).joined(separator: "\n")
+    }
+
+    private func defaultTypingAttributes(for owner: NoteRichTextEditor.Coordinator) -> [NSAttributedString.Key: Any] {
+        let note = owner.store.note
+        let theme = BuiltInThemes.theme(id: note.themeID)
+        return [
+            .font: NSFont.systemFont(ofSize: note.fontSize, weight: .medium),
+            .foregroundColor: NSColor(hex: theme.foreground),
+            .paragraphStyle: NSParagraphStyle.pinStickyDefault(fontSize: note.fontSize),
+            .kern: 0
+        ]
     }
 
     private func toggleTodoCircleIfNeeded(event: NSEvent) -> Bool {
         let eventPoint = convert(event.locationInWindow, from: nil)
         guard let marker = todoMarkerRect(at: eventPoint) else { return false }
         textStorage?.replaceCharacters(in: NSRange(location: marker.location, length: 1), with: marker.value == "○" ? "●" : "○")
-        if let storage = textStorage {
-            owner?.store.updateAttributedContent(storage)
-        }
+        owner?.store.updateContent(string)
         return true
     }
 
@@ -489,9 +649,118 @@ final class ContextMenuTextView: NSTextView {
     }
 }
 
+final class PinStickyTextEditorContainer: NSView {
+    weak var textView: NSTextView? {
+        didSet {
+            oldValue?.removeFromSuperview()
+            if let textView {
+                addSubview(textView)
+                configureTextLayout()
+            }
+        }
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.masksToBounds = true
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        wantsLayer = true
+        layer?.masksToBounds = true
+    }
+
+    override func layout() {
+        super.layout()
+        configureTextLayout()
+    }
+
+    func configureTextLayout() {
+        guard let textView,
+              let textContainer = textView.textContainer,
+              let layoutManager = textView.layoutManager else { return }
+
+        let size = NSSize(width: max(bounds.width, 1), height: max(bounds.height, 1))
+
+        textView.textContainerInset = NSSize(width: 0, height: 0)
+        textContainer.lineFragmentPadding = 0
+        textContainer.widthTracksTextView = false
+        textContainer.heightTracksTextView = false
+        textContainer.containerSize = NSSize(width: size.width, height: CGFloat.greatestFiniteMagnitude)
+        textView.frame = NSRect(origin: .zero, size: size)
+
+        textView.minSize = size
+        textView.maxSize = size
+        textView.isVerticallyResizable = false
+        textView.isHorizontallyResizable = false
+        textView.needsDisplay = true
+        needsDisplay = true
+        layoutManager.ensureLayout(for: textContainer)
+    }
+}
+
 private extension NSTextView {
     var isFirstResponderInWindow: Bool {
         window?.firstResponder === self
+    }
+
+    var currentCharacterAttributeState: CharacterAttributeState {
+        guard let storage = textStorage else { return CharacterAttributeState() }
+        if storage.length == 0 {
+            return CharacterAttributeState(
+                bold: (typingAttributes[.font] as? NSFont)?.pinStickyIsBold == true,
+                underline: (typingAttributes[.underlineStyle] as? Int ?? 0) != 0,
+                strikethrough: (typingAttributes[.strikethroughStyle] as? Int ?? 0) != 0
+            )
+        }
+
+        let selected = selectedRange()
+        let range: NSRange
+        if selected.length > 0 {
+            range = selected
+        } else {
+            let location = min(max(selected.location - 1, 0), storage.length - 1)
+            range = NSRange(location: location, length: 1)
+        }
+
+        return CharacterAttributeState(
+            bold: storage.pinStickyAllCharacters(in: range) { attributes in
+                (attributes[.font] as? NSFont)?.pinStickyIsBold == true
+            },
+            underline: storage.pinStickyAllCharacters(in: range) { attributes in
+                (attributes[.underlineStyle] as? Int ?? 0) != 0
+            },
+            strikethrough: storage.pinStickyAllCharacters(in: range) { attributes in
+                (attributes[.strikethroughStyle] as? Int ?? 0) != 0
+            }
+        )
+    }
+}
+
+private extension NSTextStorage {
+    func pinStickyAllCharacters(in range: NSRange, satisfy predicate: ([NSAttributedString.Key: Any]) -> Bool) -> Bool {
+        let clampedRange = NSRange(
+            location: min(max(range.location, 0), length),
+            length: min(max(range.length, 0), max(0, length - min(max(range.location, 0), length)))
+        )
+        guard clampedRange.length > 0 else { return false }
+
+        var allMatch = true
+        enumerateAttributes(in: clampedRange) { attributes, _, stop in
+            if !predicate(attributes) {
+                allMatch = false
+                stop.pointee = true
+            }
+        }
+        return allMatch
+    }
+}
+
+private extension NSFont {
+    var pinStickyIsBold: Bool {
+        NSFontManager.shared.traits(of: self).contains(.boldFontMask)
     }
 }
 
@@ -527,6 +796,7 @@ enum PinStickyShortcutKey {
     case newNote
     case noteList
     case showAll
+    case selectNote
     case collapseExpand
     case nextTheme
     case reset
@@ -541,6 +811,7 @@ extension AppShortcutAction {
         case .newNote: .newNote
         case .noteList: .noteList
         case .showAll: .showAll
+        case .selectNote: .selectNote
         case .collapseExpand: .collapseExpand
         case .nextTheme: .nextTheme
         case .closeNote: .closeNote
@@ -606,21 +877,6 @@ private struct TextColorOption {
 
 private extension StickerNote {
     func makeAttributedString(theme: NoteTheme) -> NSAttributedString {
-        if let attributedContentData,
-           let attributed = try? NSAttributedString(
-            data: attributedContentData,
-            options: [.documentType: NSAttributedString.DocumentType.rtf],
-            documentAttributes: nil
-           ) {
-            let copy = NSMutableAttributedString(attributedString: attributed)
-            copy.addAttribute(
-                .font,
-                value: NSFont.systemFont(ofSize: fontSize, weight: .medium),
-                range: NSRange(location: 0, length: copy.length)
-            )
-            return copy
-        }
-
         return NSAttributedString(
             string: content,
             attributes: [

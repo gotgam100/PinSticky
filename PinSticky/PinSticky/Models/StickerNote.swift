@@ -8,6 +8,8 @@ struct StickerNote: Codable, Equatable, Identifiable {
     var attributedContentData: Data?
     var themeID: String
     var fontSize: Double
+    var opacity: Double
+    var usesLiquidGlass: Bool
     var isCollapsed: Bool
     var displayMode: NoteDisplayMode
     var attachedAppName: String?
@@ -22,6 +24,8 @@ struct StickerNote: Codable, Equatable, Identifiable {
         case attributedContentData
         case themeID
         case fontSize
+        case opacity
+        case usesLiquidGlass
         case isCollapsed
         case displayMode
         case attachedAppName
@@ -37,6 +41,8 @@ struct StickerNote: Codable, Equatable, Identifiable {
         attributedContentData: Data?,
         themeID: String,
         fontSize: Double,
+        opacity: Double = 1,
+        usesLiquidGlass: Bool = false,
         isCollapsed: Bool,
         displayMode: NoteDisplayMode,
         attachedAppName: String?,
@@ -50,6 +56,8 @@ struct StickerNote: Codable, Equatable, Identifiable {
         self.attributedContentData = attributedContentData
         self.themeID = themeID
         self.fontSize = fontSize
+        self.opacity = opacity
+        self.usesLiquidGlass = usesLiquidGlass
         self.isCollapsed = isCollapsed
         self.displayMode = displayMode
         self.attachedAppName = attachedAppName
@@ -66,6 +74,8 @@ struct StickerNote: Codable, Equatable, Identifiable {
         attributedContentData = try container.decodeIfPresent(Data.self, forKey: .attributedContentData)
         themeID = try container.decode(String.self, forKey: .themeID)
         fontSize = try container.decode(Double.self, forKey: .fontSize)
+        opacity = Self.clampedOpacity(try container.decodeIfPresent(Double.self, forKey: .opacity) ?? 1)
+        usesLiquidGlass = try container.decodeIfPresent(Bool.self, forKey: .usesLiquidGlass) ?? false
         isCollapsed = try container.decode(Bool.self, forKey: .isCollapsed)
         displayMode = try container.decodeIfPresent(NoteDisplayMode.self, forKey: .displayMode) ?? .always
         attachedAppName = try container.decodeIfPresent(String.self, forKey: .attachedAppName)
@@ -105,6 +115,10 @@ struct StickerNote: Codable, Equatable, Identifiable {
             collapsedOrigin: CodablePoint(x: origin.x + 120, y: origin.y + 100),
             updatedAt: Date()
         )
+    }
+
+    static func clampedOpacity(_ opacity: Double) -> Double {
+        min(max(opacity, 0.7), 1)
     }
 }
 
@@ -252,6 +266,7 @@ enum AppShortcutAction: String, CaseIterable, Identifiable {
     case newNote
     case noteList
     case showAll
+    case selectNote
     case collapseExpand
     case nextTheme
     case closeNote
@@ -264,6 +279,7 @@ enum AppShortcutAction: String, CaseIterable, Identifiable {
         .newNote,
         .noteList,
         .showAll,
+        .selectNote,
         .collapseExpand,
         .nextTheme,
         .closeNote,
@@ -279,6 +295,8 @@ enum AppShortcutAction: String, CaseIterable, Identifiable {
             AppShortcut(keyCode: UInt32(kVK_ANSI_L), characters: "L", usesCommand: true, usesOption: false, usesControl: false, usesShift: false)
         case .showAll:
             AppShortcut(keyCode: UInt32(kVK_ANSI_S), characters: "S", usesCommand: true, usesOption: false, usesControl: false, usesShift: false)
+        case .selectNote:
+            AppShortcut(keyCode: UInt32(kVK_ANSI_E), characters: "E", usesCommand: true, usesOption: false, usesControl: false, usesShift: false)
         case .collapseExpand:
             AppShortcut(keyCode: UInt32(kVK_ANSI_D), characters: "D", usesCommand: true, usesOption: false, usesControl: false, usesShift: false)
         case .nextTheme:
@@ -297,6 +315,7 @@ enum AppShortcutAction: String, CaseIterable, Identifiable {
         case .newNote: .newNote
         case .noteList: .noteList
         case .showAll: .showNote
+        case .selectNote: .selectNote
         case .collapseExpand: .collapseExpand
         case .nextTheme: .nextTheme
         case .closeNote: .closeNote
@@ -432,6 +451,8 @@ enum AppLanguage: String, CaseIterable, Equatable {
         case (.english, .pinningStatus): "Pinning Status"
         case (.korean, .newNote): "새 메모"
         case (.english, .newNote): "New Note"
+        case (.korean, .selectNote): "메모 선택"
+        case (.english, .selectNote): "Select Note"
         case (.korean, .collapseExpand): "작은 원 / 펼치기"
         case (.english, .collapseExpand): "Collapse / Expand"
         case (.korean, .nextTheme): "다음 테마"
@@ -480,8 +501,8 @@ enum AppLanguage: String, CaseIterable, Equatable {
         case (.english, .dotMode): "Dot collapse mode"
         case (.korean, .palette): "샘플 이미지 기반 컬러 팔레트"
         case (.english, .palette): "Color palette inspired by the sample image"
-        case (.korean, .makeTodo): "투두 형식으로 변경"
-        case (.english, .makeTodo): "Convert to Todo"
+        case (.korean, .makeTodo): "체크박스 형식"
+        case (.english, .makeTodo): "Checkbox Format"
         case (.korean, .textColor): "글씨 색상"
         case (.english, .textColor): "Text Color"
         case (.korean, .about): "PinSticky 정보"
@@ -494,6 +515,12 @@ enum AppLanguage: String, CaseIterable, Equatable {
         case (.english, .defaultBackground): "Background"
         case (.korean, .defaultTextColor): "글자색"
         case (.english, .defaultTextColor): "Text Color"
+        case (.korean, .defaultOpacity): "투명도"
+        case (.english, .defaultOpacity): "Opacity"
+        case (.korean, .liquidGlass): "Liquid Glass"
+        case (.english, .liquidGlass): "Liquid Glass"
+        case (.korean, .liquidGlassDescription): "macOS 26 이상에서만 적용됩니다."
+        case (.english, .liquidGlassDescription): "Available on macOS 26 or later."
         case (.korean, .systemTextColor): "배경색에 맞춤"
         case (.english, .systemTextColor): "Match Background"
         case (.korean, .launchAtLogin): "컴퓨터 로그인 시 자동실행"
@@ -510,10 +537,12 @@ enum AppLanguage: String, CaseIterable, Equatable {
         case (.english, .developerApps): "More Apps by Developer"
         case (.korean, .deleteNote): "메모 삭제"
         case (.english, .deleteNote): "Delete Note"
-        case (.korean, .cancelTodo): "투두 형식 취소"
-        case (.english, .cancelTodo): "Remove Todo Format"
+        case (.korean, .cancelTodo): "체크박스 형식 취소"
+        case (.english, .cancelTodo): "Remove Checkbox Format"
         case (.korean, .characterAttributes): "글자 속성"
         case (.english, .characterAttributes): "Character Attributes"
+        case (.korean, .bold): "볼드"
+        case (.english, .bold): "Bold"
         case (.korean, .underline): "밑줄"
         case (.english, .underline): "Underline"
         case (.korean, .italic): "기울이기"
@@ -562,6 +591,7 @@ enum AppText {
     case deselectAll
     case selectedNotesPinMenu
     case pinningStatus
+    case selectNote
     case collapseExpand
     case nextTheme
     case quit
@@ -593,6 +623,9 @@ enum AppText {
     case defaultNewNote
     case defaultBackground
     case defaultTextColor
+    case defaultOpacity
+    case liquidGlass
+    case liquidGlassDescription
     case systemTextColor
     case launchAtLogin
     case shortcutSettings
@@ -603,6 +636,7 @@ enum AppText {
     case deleteNote
     case cancelTodo
     case characterAttributes
+    case bold
     case underline
     case italic
     case strikethrough

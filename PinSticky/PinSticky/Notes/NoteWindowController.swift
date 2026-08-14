@@ -8,10 +8,15 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
     private static let toolbarHeight: CGFloat = NoteView.toolbarHeight
 
     let store: NoteStore
-    private let newNote: () -> Void
+    private let newNote: (CGRect) -> Void
     private let deleteNote: (UUID) -> Void
     private let activateNote: (UUID) -> Void
     private let noteFrameChanged: () -> Void
+    private let selectionState: NoteSelectionState
+    private let attachNotes: (NoteStore, RunningApplicationInfo?) -> Void
+    private let updateThemeForSelection: (NoteStore, String) -> Void
+    private let updateFontSizeForSelection: (NoteStore, Double) -> Void
+    private let collapseSelection: (NoteStore) -> Void
     private let visibilityContext: () -> (frontmostBundleIdentifier: String?, visibleBundleIdentifiers: Set<String>)
     private let window: StickerNoteWindow
     private let placementManager = WindowPlacementManager()
@@ -28,10 +33,15 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
 
     init(
         store: NoteStore,
-        newNote: @escaping () -> Void,
+        newNote: @escaping (CGRect) -> Void,
         deleteNote: @escaping (UUID) -> Void,
         activateNote: @escaping (UUID) -> Void,
         noteFrameChanged: @escaping () -> Void,
+        selectionState: NoteSelectionState,
+        attachNotes: @escaping (NoteStore, RunningApplicationInfo?) -> Void,
+        updateThemeForSelection: @escaping (NoteStore, String) -> Void,
+        updateFontSizeForSelection: @escaping (NoteStore, Double) -> Void,
+        collapseSelection: @escaping (NoteStore) -> Void,
         visibilityContext: @escaping () -> (frontmostBundleIdentifier: String?, visibleBundleIdentifiers: Set<String>)
     ) {
         self.store = store
@@ -39,6 +49,11 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
         self.deleteNote = deleteNote
         self.activateNote = activateNote
         self.noteFrameChanged = noteFrameChanged
+        self.selectionState = selectionState
+        self.attachNotes = attachNotes
+        self.updateThemeForSelection = updateThemeForSelection
+        self.updateFontSizeForSelection = updateFontSizeForSelection
+        self.collapseSelection = collapseSelection
         self.visibilityContext = visibilityContext
         let initialFrame = Self.windowFrame(forNoteFrame: placementManager.clampedFrame(store.note.expandedFrame.cgRect))
         window = StickerNoteWindow(frame: initialFrame)
@@ -61,6 +76,9 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
         window.noteShortcutHandler = { [weak self] shortcut in
             guard let self else { return false }
             switch shortcut {
+            case .selectNote:
+                self.toggleSelected()
+                return true
             case .closeNote:
                 self.deleteNote(self.store.note.id)
                 return true
@@ -107,6 +125,11 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
         store.updateCollapsed(nextCollapsedState)
         applyContent(animated: true)
         finishTransitionAfterAnimation()
+    }
+
+    func collapseIfExpanded() {
+        guard !store.note.isCollapsed else { return }
+        toggleCollapsed()
     }
 
     private func handlePinch(magnification: CGFloat) {
@@ -207,6 +230,10 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
         isManuallyHidden
     }
 
+    func toggleSelected() {
+        selectionState.toggle(store.note.id)
+    }
+
     private func selectAndBringToFront() {
         activateNote(store.note.id)
         bringToFront()
@@ -237,11 +264,41 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
             window.contentView = ClearHostingView(allowsTransparentTopHitTesting: false, rootView: NoteView(
                 store: store,
                 overlapState: overlapState,
-                newNote: newNote,
+                selectionState: selectionState,
+                newNote: { [weak self] in
+                    guard let self else { return }
+                    self.captureCurrentFrame()
+                    self.newNote(Self.noteFrame(forWindowFrame: self.window.frame))
+                },
                 deleteNote: { [deleteNote, store] in deleteNote(store.note.id) }
             ) { [weak self] in
                 self?.toggleCollapsed()
+            } attachmentDragSucceeded: { [weak self] in
+                self?.shakeForAttachment()
+            } attachNotes: { [attachNotes, store] application in
+                attachNotes(store, application)
+            } updateThemeForSelection: { [updateThemeForSelection, store] themeID in
+                updateThemeForSelection(store, themeID)
+            } updateFontSizeForSelection: { [updateFontSizeForSelection, store] delta in
+                updateFontSizeForSelection(store, delta)
+            } collapseSelection: { [collapseSelection, store] in
+                collapseSelection(store)
             })
+        }
+    }
+
+    private func shakeForAttachment() {
+        let originalFrame = window.frame
+        let offsets: [CGFloat] = [0, -4, 1, -1, 0]
+
+        for (index, offset) in offsets.enumerated() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(index) * 0.04) { [weak self] in
+                guard let self else { return }
+                self.window.setFrame(originalFrame.offsetBy(dx: 0, dy: offset), display: true)
+                if index == offsets.count - 1 {
+                    self.captureCurrentFrame()
+                }
+            }
         }
     }
 

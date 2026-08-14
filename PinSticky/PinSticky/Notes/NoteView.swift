@@ -4,17 +4,23 @@ import SwiftUI
 struct NoteView: View {
     @ObservedObject var store: NoteStore
     @ObservedObject var overlapState: NoteOverlapState
+    @ObservedObject var selectionState: NoteSelectionState
     let newNote: () -> Void
     let deleteNote: () -> Void
     let collapse: () -> Void
+    let attachmentDragSucceeded: () -> Void
+    let attachNotes: (RunningApplicationInfo?) -> Void
+    let updateThemeForSelection: (String) -> Void
+    let updateFontSizeForSelection: (Double) -> Void
+    let collapseSelection: () -> Void
 
     static let minimumNoteWidth: CGFloat = 270
     static let minimumNoteHeight: CGFloat = 170
     static let resizableFloorSize: CGFloat = 80
     static let collapseAreaRatio: CGFloat = 0.25
     static let collapseAxisThreshold: CGFloat = resizableFloorSize + 24
-    static let toolbarMinimumVisibleWidth: CGFloat = 225
-    static let toolbarCompressedWidth: CGFloat = 170
+    static let toolbarMinimumVisibleWidth: CGFloat = 250
+    static let toolbarCompressedWidth: CGFloat = 195
     static let toolbarHeight: CGFloat = 36
     static let collapsedDotSize: CGFloat = 28
     static let collapsedDotVisualSize: CGFloat = 24
@@ -24,11 +30,18 @@ struct NoteView: View {
         BuiltInThemes.theme(id: store.note.themeID)
     }
 
+    private var noteOpacity: Double {
+        StickerNote.clampedOpacity(store.note.opacity)
+    }
+
+    private var usesLiquidGlass: Bool {
+        store.note.usesLiquidGlass
+    }
+
     var body: some View {
         GeometryReader { geometry in
             ZStack {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(theme.backgroundColor)
+                NoteBackground(theme: theme, opacity: noteOpacity, usesLiquidGlass: usesLiquidGlass)
                     .overlay {
                         if overlapState.hasOverlap {
                             RoundedRectangle(cornerRadius: 18, style: .continuous)
@@ -40,6 +53,7 @@ struct NoteView: View {
                     header(width: geometry.size.width)
 
                     NoteRichTextEditor(store: store, theme: theme)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .padding(.horizontal, 22)
                         .padding(.top, 8)
                         .padding(.bottom, 20)
@@ -56,7 +70,19 @@ struct NoteView: View {
         HStack {
             Spacer(minLength: 8)
             if width >= Self.toolbarMinimumVisibleWidth {
-                NoteHoverControls(store: store, theme: theme, newNote: newNote, deleteNote: deleteNote, collapse: collapse)
+                NoteHoverControls(
+                    store: store,
+                    selectionState: selectionState,
+                    theme: theme,
+                    newNote: newNote,
+                    deleteNote: deleteNote,
+                    collapse: collapse,
+                    attachmentDragSucceeded: attachmentDragSucceeded,
+                    attachNotes: attachNotes,
+                    updateThemeForSelection: updateThemeForSelection,
+                    updateFontSizeForSelection: updateFontSizeForSelection,
+                    collapseSelection: collapseSelection
+                )
             } else {
                 HeaderOverflowDots(color: theme.foregroundColor)
             }
@@ -86,13 +112,27 @@ private struct HeaderOverflowDots: View {
 
 private struct NoteHoverControls: View {
     @ObservedObject var store: NoteStore
+    @ObservedObject var selectionState: NoteSelectionState
     let theme: NoteTheme
     let newNote: () -> Void
     let deleteNote: () -> Void
     let collapse: () -> Void
+    let attachmentDragSucceeded: () -> Void
+    let attachNotes: (RunningApplicationInfo?) -> Void
+    let updateThemeForSelection: (String) -> Void
+    let updateFontSizeForSelection: (Double) -> Void
+    let collapseSelection: () -> Void
+    @State private var characterAttributeState = CharacterAttributeState()
 
     var body: some View {
         HStack(spacing: 8) {
+            Button {
+                selectionState.toggle(store.note.id)
+            } label: {
+                Image(systemName: selectionState.isSelected(store.note.id) ? "checkmark.square.fill" : "square")
+            }
+            .help(selectionState.isSelected(store.note.id) ? "선택 해제" : "메모 선택")
+
             Button(action: newNote) {
                 Image(systemName: "plus")
             }
@@ -105,15 +145,17 @@ private struct NoteHoverControls: View {
 
             themeMenu
 
-            Button(action: { store.updateFontSize(store.note.fontSize - 1) }) {
+            characterAttributesMenu
+
+            Button(action: { updateFontSizeForSelection(-1) }) {
                 Image(systemName: "textformat.size.smaller")
             }
 
-            Button(action: { store.updateFontSize(store.note.fontSize + 1) }) {
+            Button(action: { updateFontSizeForSelection(1) }) {
                 Image(systemName: "textformat.size.larger")
             }
 
-            Button(action: collapse) {
+            Button(action: collapseSelection) {
                 Image(systemName: "circle.fill")
             }
             .onHover { isHovering in
@@ -135,7 +177,7 @@ private struct NoteHoverControls: View {
         Menu {
             ForEach(BuiltInThemes.all) { candidate in
                 Button {
-                    store.updateTheme(candidate.id)
+                    updateThemeForSelection(candidate.id)
                 } label: {
                     HStack {
                         Circle()
@@ -152,46 +194,86 @@ private struct NoteHoverControls: View {
         .buttonStyle(.plain)
     }
 
-    private var appPinningMenu: some View {
+    private var characterAttributesMenu: some View {
         Menu {
-            Section(store.language.text(.currentMode)) {
-                Text(currentPinningDescription)
+            Button {
+                requestCharacterAttribute(.bold)
+            } label: {
+                characterAttributeLabel(
+                    title: store.language.text(.bold),
+                    systemImage: "bold",
+                    isActive: characterAttributeState.bold
+                )
             }
 
-            Section(store.language.text(.pinMenu)) {
-                Button {
-                    store.setAlwaysVisible()
-                } label: {
-                    pinningLabel(
-                        title: store.language.text(.alwaysVisible),
-                        isSelected: store.note.displayMode == .always
-                    )
-                }
-
-                ForEach(runningApps) { app in
-                    Button {
-                        store.attach(to: app)
-                    } label: {
-                        pinningLabel(
-                            title: app.name,
-                            isSelected: store.note.attachedBundleIdentifier == app.bundleIdentifier
-                        )
-                    }
-                }
+            Button {
+                requestCharacterAttribute(.underline)
+            } label: {
+                characterAttributeLabel(
+                    title: store.language.text(.underline),
+                    systemImage: "underline",
+                    isActive: characterAttributeState.underline
+                )
             }
 
-            if store.note.displayMode == .whenAppIsActive {
-                Section {
-                    Button(store.language.text(.clearAttachment)) {
-                        store.setAlwaysVisible()
-                    }
-                }
+            Button {
+                requestCharacterAttribute(.strikethrough)
+            } label: {
+                characterAttributeLabel(
+                    title: store.language.text(.strikethrough),
+                    systemImage: "strikethrough",
+                    isActive: characterAttributeState.strikethrough
+                )
             }
+
         } label: {
-            Image(systemName: store.note.displayMode == .whenAppIsActive ? "pin.fill" : "pin")
+            Image(systemName: "textformat")
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
+        .onReceive(NotificationCenter.default.publisher(for: .pinStickyCharacterAttributeStateChanged)) { notification in
+            guard let noteID = notification.userInfo?["noteID"] as? UUID,
+                  noteID == store.note.id else { return }
+            characterAttributeState = CharacterAttributeState(
+                bold: notification.userInfo?["bold"] as? Bool ?? false,
+                underline: notification.userInfo?["underline"] as? Bool ?? false,
+                strikethrough: notification.userInfo?["strikethrough"] as? Bool ?? false
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func characterAttributeLabel(title: String, systemImage: String, isActive: Bool) -> some View {
+        HStack {
+            Image(systemName: systemImage)
+                .frame(width: 14)
+            Text(title)
+            if isActive {
+                Spacer()
+                Image(systemName: "checkmark")
+            }
+        }
+    }
+
+    private func requestCharacterAttribute(_ action: NoteCharacterAttributeAction) {
+        NotificationCenter.default.post(
+            name: .pinStickyCharacterAttributeRequested,
+            object: nil,
+            userInfo: [
+                "noteID": store.note.id,
+                "action": action.rawValue
+            ]
+        )
+    }
+
+    private var appPinningMenu: some View {
+        PinAttachmentButton(
+            store: store,
+            theme: theme,
+            attachmentDragSucceeded: attachmentDragSucceeded,
+            attachNotes: attachNotes
+        )
+            .frame(width: 15, height: 15)
     }
 
     private var currentPinningDescription: String {
@@ -202,14 +284,86 @@ private struct NoteHoverControls: View {
         let appName = store.note.attachedAppName ?? store.note.attachedBundleIdentifier ?? store.language.text(.notAttached)
         return "\(store.language.text(.attachedTo)): \(appName)"
     }
+}
 
-    @ViewBuilder
-    private func pinningLabel(title: String, isSelected: Bool) -> some View {
-        if isSelected {
-            Label(title, systemImage: "checkmark")
-        } else {
-            Text(title)
+private struct PinAttachmentButton: NSViewRepresentable {
+    @ObservedObject var store: NoteStore
+    let theme: NoteTheme
+    let attachmentDragSucceeded: () -> Void
+    let attachNotes: (RunningApplicationInfo?) -> Void
+
+    func makeNSView(context: Context) -> DraggablePinButton {
+        let button = DraggablePinButton(frame: NSRect(x: 0, y: 0, width: 15, height: 15))
+        button.isBordered = false
+        button.bezelStyle = .shadowlessSquare
+        button.imagePosition = .imageOnly
+        button.imageScaling = .scaleProportionallyDown
+        button.focusRingType = .none
+        button.setButtonType(.momentaryChange)
+        return button
+    }
+
+    func updateNSView(_ button: DraggablePinButton, context: Context) {
+        button.image = NSImage(systemSymbolName: store.note.displayMode == .whenAppIsActive ? "pin.fill" : "pin", accessibilityDescription: nil)
+        button.contentTintColor = NSColor(hex: theme.foreground)
+        button.onClick = { [weak store] sourceView in
+            guard let store else { return }
+            makeMenu(for: store).popUp(positioning: nil, at: NSPoint(x: -8, y: sourceView.bounds.maxY + 6), in: sourceView)
         }
+        button.onDragEnd = {
+            guard let application = ApplicationDropTargetResolver.applicationUnderMouse() else { return }
+            attachNotes(application)
+            attachmentDragSucceeded()
+        }
+    }
+
+    private func makeMenu(for store: NoteStore) -> NSMenu {
+        let menu = NSMenu()
+
+        let currentModeHeader = NSMenuItem(title: store.language.text(.currentMode), action: nil, keyEquivalent: "")
+        currentModeHeader.isEnabled = false
+        menu.addItem(currentModeHeader)
+
+        let currentModeItem = NSMenuItem(title: currentPinningDescription(for: store), action: nil, keyEquivalent: "")
+        currentModeItem.isEnabled = false
+        menu.addItem(currentModeItem)
+        menu.addItem(.separator())
+
+        let pinMenuHeader = NSMenuItem(title: store.language.text(.pinMenu), action: nil, keyEquivalent: "")
+        pinMenuHeader.isEnabled = false
+        menu.addItem(pinMenuHeader)
+
+        let alwaysItem = PinAttachmentMenuItem(title: store.language.text(.alwaysVisible)) {
+            attachNotes(nil)
+        }
+        alwaysItem.state = store.note.displayMode == .always ? .on : .off
+        menu.addItem(alwaysItem)
+
+        runningApps.forEach { app in
+            let item = PinAttachmentMenuItem(title: app.name) {
+                attachNotes(app)
+            }
+            item.state = store.note.attachedBundleIdentifier == app.bundleIdentifier ? .on : .off
+            menu.addItem(item)
+        }
+
+        if store.note.displayMode == .whenAppIsActive {
+            menu.addItem(.separator())
+            menu.addItem(PinAttachmentMenuItem(title: store.language.text(.clearAttachment)) {
+                attachNotes(nil)
+            })
+        }
+
+        return menu
+    }
+
+    private func currentPinningDescription(for store: NoteStore) -> String {
+        guard store.note.displayMode == .whenAppIsActive else {
+            return store.language.text(.alwaysVisible)
+        }
+
+        let appName = store.note.attachedAppName ?? store.note.attachedBundleIdentifier ?? store.language.text(.notAttached)
+        return "\(store.language.text(.attachedTo)): \(appName)"
     }
 
     private var runningApps: [RunningApplicationInfo] {
@@ -220,6 +374,116 @@ private struct NoteHoverControls: View {
             .sorted {
                 $0.name < $1.name
             }
+    }
+}
+
+private final class DraggablePinButton: NSButton {
+    var onClick: ((NSView) -> Void)?
+    var onDragEnd: (() -> Void)?
+    private var dragPreview: PinDragPreviewWindow?
+
+    override func mouseDown(with event: NSEvent) {
+        let dragThreshold: CGFloat = 7
+        let startScreenPoint = NSEvent.mouseLocation
+        var didDrag = false
+
+        while true {
+            guard let nextEvent = window?.nextEvent(
+                matching: [.leftMouseDragged, .leftMouseUp],
+                until: Date.distantFuture,
+                inMode: .eventTracking,
+                dequeue: true
+            ) else {
+                alphaValue = 1
+                return
+            }
+
+            let current = NSEvent.mouseLocation
+            let distance = hypot(current.x - startScreenPoint.x, current.y - startScreenPoint.y)
+
+            switch nextEvent.type {
+            case .leftMouseDragged:
+                guard didDrag || distance > dragThreshold else { continue }
+                if !didDrag {
+                    didDrag = true
+                    alphaValue = 0.36
+                    dragPreview = PinDragPreviewWindow(
+                        image: image,
+                        tintColor: contentTintColor ?? .labelColor
+                    )
+                }
+                dragPreview?.move(to: current)
+            case .leftMouseUp:
+                dragPreview?.close()
+                dragPreview = nil
+                alphaValue = 1
+                if didDrag {
+                    onDragEnd?()
+                } else {
+                    onClick?(self)
+                }
+                return
+            default:
+                break
+            }
+        }
+    }
+}
+
+private final class PinDragPreviewWindow: NSPanel {
+    private let sideLength: CGFloat = 28
+
+    init(image: NSImage?, tintColor: NSColor) {
+        super.init(
+            contentRect: NSRect(x: 0, y: 0, width: sideLength, height: sideLength),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+
+        isOpaque = false
+        backgroundColor = .clear
+        hasShadow = false
+        level = .floating
+        ignoresMouseEvents = true
+        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+
+        let imageView = NSImageView(frame: NSRect(x: 0, y: 0, width: sideLength, height: sideLength))
+        imageView.image = image
+        imageView.contentTintColor = tintColor
+        imageView.imageScaling = .scaleProportionallyUpOrDown
+
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: sideLength, height: sideLength))
+        container.wantsLayer = true
+        container.layer?.backgroundColor = NSColor.clear.cgColor
+        container.addSubview(imageView)
+        contentView = container
+    }
+
+    func move(to mouseLocation: CGPoint) {
+        setFrameOrigin(CGPoint(
+            x: mouseLocation.x - sideLength / 2,
+            y: mouseLocation.y - sideLength - 4
+        ))
+        orderFrontRegardless()
+    }
+}
+
+private final class PinAttachmentMenuItem: NSMenuItem {
+    private let handler: () -> Void
+
+    init(title: String, handler: @escaping () -> Void) {
+        self.handler = handler
+        super.init(title: title, action: #selector(runHandler), keyEquivalent: "")
+        target = self
+    }
+
+    required init(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    @objc private func runHandler() {
+        handler()
     }
 }
 
@@ -262,6 +526,66 @@ struct RunningApplicationInfo: Identifiable, Hashable {
     }
 }
 
+private enum ApplicationDropTargetResolver {
+    static func applicationUnderMouse() -> RunningApplicationInfo? {
+        let mouseLocation = NSEvent.mouseLocation
+        let windowPoint = cgWindowPoint(from: mouseLocation)
+
+        guard let windowInfoList = CGWindowListCopyWindowInfo(
+            [.optionOnScreenOnly, .excludeDesktopElements],
+            kCGNullWindowID
+        ) as? [[String: Any]] else {
+            return nil
+        }
+
+        for windowInfo in windowInfoList {
+            guard let ownerPID = windowInfo[kCGWindowOwnerPID as String] as? pid_t,
+                  ownerPID != ProcessInfo.processInfo.processIdentifier,
+                  windowInfo[kCGWindowLayer as String] as? Int == 0,
+                  (windowInfo[kCGWindowAlpha as String] as? Double ?? 1) > 0.01,
+                  let bounds = windowBounds(from: windowInfo),
+                  bounds.contains(windowPoint),
+                  let application = NSRunningApplication(processIdentifier: ownerPID),
+                  !application.isTerminated,
+                  !application.isHidden else {
+                continue
+            }
+
+            return RunningApplicationInfo(application: application)
+        }
+
+        return nil
+    }
+
+    private static func cgWindowPoint(from appKitPoint: CGPoint) -> CGPoint {
+        guard let mainScreen = NSScreen.screens.first else { return appKitPoint }
+        return CGPoint(
+            x: appKitPoint.x,
+            y: mainScreen.frame.maxY - appKitPoint.y
+        )
+    }
+
+    private static func windowBounds(from windowInfo: [String: Any]) -> CGRect? {
+        if let boundsDictionary = windowInfo[kCGWindowBounds as String] as? NSDictionary {
+            var bounds = CGRect.zero
+            guard CGRectMakeWithDictionaryRepresentation(boundsDictionary, &bounds) else {
+                return nil
+            }
+            return bounds
+        }
+
+        if let boundsDictionary = windowInfo[kCGWindowBounds as String] as? [String: CGFloat],
+           let x = boundsDictionary["X"],
+           let y = boundsDictionary["Y"],
+           let width = boundsDictionary["Width"],
+           let height = boundsDictionary["Height"] {
+            return CGRect(x: x, y: y, width: width, height: height)
+        }
+
+        return nil
+    }
+}
+
 struct DotView: View {
     @ObservedObject var store: NoteStore
     @ObservedObject var overlapState: NoteOverlapState
@@ -272,10 +596,17 @@ struct DotView: View {
         BuiltInThemes.theme(id: store.note.themeID)
     }
 
+    private var dotOpacity: Double {
+        StickerNote.clampedOpacity(store.note.opacity)
+    }
+
+    private var usesLiquidGlass: Bool {
+        store.note.usesLiquidGlass
+    }
+
     var body: some View {
         ZStack {
-            Circle()
-                .fill(theme.backgroundColor)
+            DotBackground(theme: theme, opacity: dotOpacity, usesLiquidGlass: usesLiquidGlass)
                 .overlay {
                     if overlapState.hasOverlap {
                         Circle()
@@ -290,8 +621,89 @@ struct DotView: View {
     }
 }
 
+private struct NoteBackground: View {
+    let theme: NoteTheme
+    let opacity: Double
+    let usesLiquidGlass: Bool
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
+        ZStack {
+            if usesLiquidGlass, #available(macOS 26.0, *) {
+                ZStack {
+                    shape
+                        .fill(.ultraThinMaterial)
+                    shape
+                        .fill(theme.backgroundColor.opacity(max(0.30, opacity * 0.54)))
+                    shape
+                        .strokeBorder(Color.white.opacity(0.34), lineWidth: 1)
+                }
+                .glassEffect(.regular.tint(theme.backgroundColor.opacity(0.34)), in: shape)
+            } else {
+                shape
+                    .fill(.ultraThinMaterial)
+                    .opacity(1 - opacity)
+                shape
+                    .fill(theme.backgroundColor.opacity(opacity))
+            }
+        }
+    }
+}
+
+private struct DotBackground: View {
+    let theme: NoteTheme
+    let opacity: Double
+    let usesLiquidGlass: Bool
+
+    var body: some View {
+        ZStack {
+            if usesLiquidGlass, #available(macOS 26.0, *) {
+                ZStack {
+                    Circle()
+                        .fill(.ultraThinMaterial)
+                    Circle()
+                        .fill(theme.backgroundColor.opacity(max(0.30, opacity * 0.54)))
+                    Circle()
+                        .strokeBorder(Color.white.opacity(0.34), lineWidth: 1)
+                }
+                .glassEffect(.regular.tint(theme.backgroundColor.opacity(0.34)), in: Circle())
+            } else {
+                Circle()
+                    .fill(.ultraThinMaterial)
+                    .opacity(1 - opacity)
+                Circle()
+                    .fill(theme.backgroundColor.opacity(opacity))
+            }
+        }
+    }
+}
+
 final class NoteOverlapState: ObservableObject {
     @Published var hasOverlap = false
+}
+
+final class NoteSelectionState: ObservableObject {
+    @Published private(set) var selectedNoteIDs: Set<UUID> = []
+
+    func isSelected(_ noteID: UUID) -> Bool {
+        selectedNoteIDs.contains(noteID)
+    }
+
+    func toggle(_ noteID: UUID) {
+        if selectedNoteIDs.contains(noteID) {
+            selectedNoteIDs.remove(noteID)
+        } else {
+            selectedNoteIDs.insert(noteID)
+        }
+    }
+
+    func remove(_ noteID: UUID) {
+        selectedNoteIDs.remove(noteID)
+    }
+
+    func prune(activeNoteIDs: Set<UUID>) {
+        selectedNoteIDs = selectedNoteIDs.intersection(activeNoteIDs)
+    }
 }
 
 private struct DotInteractionView: NSViewRepresentable {

@@ -15,9 +15,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var language = NoteStore.savedLanguage()
     private var defaultThemeID = NoteStore.savedDefaultThemeID()
     private var defaultTextColor = NoteStore.savedDefaultTextColor()
+    private var defaultOpacity = NoteStore.savedDefaultOpacity()
+    private var defaultLiquidGlassEnabled = NoteStore.savedDefaultLiquidGlassEnabled()
     private var globalNewNoteShortcut = GlobalNewNoteShortcut.saved()
     private var stores: [NoteStore] = []
     private var noteWindowControllers: [UUID: NoteWindowController] = [:]
+    private let noteSelectionState = NoteSelectionState()
     private var activeNoteID: UUID?
     private var statusItem: NSStatusItem?
     private var settingsWindow: NSWindow?
@@ -99,13 +102,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         inheriting note: StickerNote?,
         themeID: String? = nil,
         centeredAt centerPoint: CGPoint? = nil,
+        near sourceFrame: CGRect? = nil,
         forceVisible: Bool? = nil
     ) {
         let noteStore = NoteStore.makeNew(
             offset: stores.count,
             inheriting: note,
             themeID: themeID,
-            centeredAt: centerPoint
+            centeredAt: centerPoint,
+            near: sourceFrame
         )
         stores.append(noteStore)
         show(
@@ -136,6 +141,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     @objc private func toggleCollapse() {
         activeController?.toggleCollapsed()
+    }
+
+    @objc private func toggleActiveNoteSelection() {
+        activeController?.toggleSelected()
     }
 
     @objc private func cycleTheme() {
@@ -194,7 +203,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 420, height: 360),
+            contentRect: NSRect(x: 0, y: 0, width: 460, height: 520),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -294,6 +303,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         language = NoteStore.savedLanguage()
         defaultThemeID = NoteStore.savedDefaultThemeID()
         defaultTextColor = NoteStore.savedDefaultTextColor()
+        let nextDefaultOpacity = NoteStore.savedDefaultOpacity()
+        let nextDefaultLiquidGlassEnabled = NoteStore.savedDefaultLiquidGlassEnabled()
+        if defaultOpacity != nextDefaultOpacity {
+            stores.forEach { $0.updateOpacity(nextDefaultOpacity) }
+            defaultOpacity = nextDefaultOpacity
+        }
+        if defaultLiquidGlassEnabled != nextDefaultLiquidGlassEnabled {
+            stores.forEach { $0.updateLiquidGlassEnabled(nextDefaultLiquidGlassEnabled) }
+            defaultLiquidGlassEnabled = nextDefaultLiquidGlassEnabled
+        }
         globalNewNoteShortcut = GlobalNewNoteShortcut.saved()
         settingsWindow?.title = language.text(.settings)
         shortcutSettingsWindow?.title = language.text(.shortcutSettings)
@@ -342,6 +361,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         menu.addItem(statusMenuItem(title: language.text(.noteList), iconName: "list.bullet.rectangle", action: #selector(showNoteList), shortcutAction: .noteList))
         menu.addItem(statusMenuItem(title: language.text(.showNote), iconName: "rectangle.stack", action: #selector(showNote), shortcutAction: .showAll))
         menu.addItem(.separator())
+        menu.addItem(statusMenuItem(title: language.text(.selectNote), iconName: "checkmark.square", action: #selector(toggleActiveNoteSelection), shortcutAction: .selectNote))
         menu.addItem(statusMenuItem(title: language.text(.collapseExpand), iconName: "arrow.down.right.and.arrow.up.left", action: #selector(toggleCollapse), shortcutAction: .collapseExpand))
         menu.addItem(statusMenuItem(title: language.text(.nextTheme), iconName: "paintpalette", action: #selector(cycleTheme), shortcutAction: .nextTheme))
         menu.addItem(statusMenuItem(title: language.text(.closeNote), iconName: "xmark.circle", action: #selector(closeNote), shortcutAction: .closeNote))
@@ -428,17 +448,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         resetManualHidden: Bool = true
     ) {
         guard stores.contains(where: { $0.note.id == store.note.id }) else { return }
-        let controller = noteWindowControllers[store.note.id] ?? NoteWindowController(store: store) { [weak self] in
-            self?.createNote(inheriting: store.note)
-        } deleteNote: { [weak self] noteID in
-            self?.deleteNote(id: noteID)
-        } activateNote: { [weak self] noteID in
-            self?.activate(noteID: noteID)
-        } noteFrameChanged: { [weak self] in
-            self?.refreshOverlapOutlines()
-        } visibilityContext: { [weak self] in
-            self?.currentVisibilityContext() ?? (nil, [])
-        }
+        let controller = noteWindowControllers[store.note.id] ?? NoteWindowController(
+            store: store,
+            newNote: { [weak self] sourceFrame in
+                self?.createNote(inheriting: store.note, near: sourceFrame)
+            },
+            deleteNote: { [weak self] noteID in
+                self?.deleteNote(id: noteID)
+            },
+            activateNote: { [weak self] noteID in
+                self?.activate(noteID: noteID)
+            },
+            noteFrameChanged: { [weak self] in
+                self?.refreshOverlapOutlines()
+            },
+            selectionState: noteSelectionState,
+            attachNotes: { [weak self] sourceStore, application in
+                self?.attachHeaderSelectedNotes(source: sourceStore, to: application)
+            },
+            updateThemeForSelection: { [weak self] sourceStore, themeID in
+                self?.updateHeaderSelectedNotesTheme(source: sourceStore, themeID: themeID)
+            },
+            updateFontSizeForSelection: { [weak self] sourceStore, delta in
+                self?.updateHeaderSelectedNotesFontSize(source: sourceStore, delta: delta)
+            },
+            collapseSelection: { [weak self] sourceStore in
+                self?.collapseHeaderSelectedNotes(source: sourceStore)
+            },
+            visibilityContext: { [weak self] in
+                self?.currentVisibilityContext() ?? (nil, [])
+            }
+        )
         noteWindowControllers[store.note.id] = controller
         if activateShownNote {
             activate(noteID: store.note.id)
@@ -463,6 +503,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         refreshOverlapOutlines()
     }
 
+    private func headerSelectedStores(source: NoteStore) -> [NoteStore] {
+        let activeStoreByID = Dictionary(uniqueKeysWithValues: stores.map { ($0.note.id, $0) })
+        let selectedStores = noteSelectionState.selectedNoteIDs.compactMap { activeStoreByID[$0] }
+        guard !selectedStores.isEmpty else { return [source] }
+        return selectedStores
+    }
+
+    private func attachHeaderSelectedNotes(source: NoteStore, to application: RunningApplicationInfo?) {
+        let targetStores = headerSelectedStores(source: source)
+        if let application {
+            targetStores.forEach { $0.attach(to: application) }
+            isShowingAllNotesUntilAppSwitch = false
+        } else {
+            targetStores.forEach { $0.setAlwaysVisible() }
+        }
+        refreshNoteVisibilityForVisibleApps()
+        updateNoteListWindowContent()
+    }
+
+    private func updateHeaderSelectedNotesTheme(source: NoteStore, themeID: String) {
+        headerSelectedStores(source: source).forEach { $0.updateTheme(themeID) }
+    }
+
+    private func updateHeaderSelectedNotesFontSize(source: NoteStore, delta: Double) {
+        headerSelectedStores(source: source).forEach { store in
+            store.updateFontSize(store.note.fontSize + delta)
+        }
+    }
+
+    private func collapseHeaderSelectedNotes(source: NoteStore) {
+        headerSelectedStores(source: source).forEach { store in
+            noteWindowControllers[store.note.id]?.collapseIfExpanded()
+        }
+    }
+
     private func refreshOverlapOutlines() {
         let visibleControllers = noteWindowControllers.values.compactMap { controller -> (NoteWindowController, CGRect)? in
             guard let frame = controller.visibleFrame else { return nil }
@@ -485,6 +560,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func deleteNote(id: UUID) {
         noteWindowControllers[id]?.close()
         noteWindowControllers[id] = nil
+        noteSelectionState.remove(id)
         if let index = stores.firstIndex(where: { $0.note.id == id }) {
             NoteStore.archiveDeletedNote(stores[index].note)
             stores[index].deleteFile()
@@ -506,6 +582,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         let restoredStore = NoteStore.makeRestored(note: note)
         stores.append(restoredStore)
+        noteSelectionState.prune(activeNoteIDs: Set(stores.map(\.note.id)))
         show(store: restoredStore, forceVisible: restoredStore.note.displayMode == .always || isShowingAllNotesUntilAppSwitch)
         updateNoteListWindowContent()
         NSApp.activate()
@@ -888,6 +965,8 @@ private extension AppDelegate {
             showNoteList()
         case .showAll:
             showNote()
+        case .selectNote:
+            toggleActiveNoteSelection()
         case .collapseExpand:
             toggleCollapse()
         case .nextTheme:

@@ -5,6 +5,8 @@ struct SettingsView: View {
     @AppStorage("appLanguage") private var storedLanguage = AppLanguage.korean.rawValue
     @State private var selectedThemeID = NoteStore.savedDefaultThemeID()
     @State private var selectedTextColor = NoteStore.savedDefaultTextColor().map(Int.init) ?? -1
+    @State private var selectedOpacity = NoteStore.savedDefaultOpacity()
+    @State private var usesLiquidGlass = NoteStore.savedDefaultLiquidGlassEnabled()
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
 
     var onChange: (() -> Void)? = nil
@@ -109,6 +111,45 @@ struct SettingsView: View {
                         }
                         .labelsHidden()
                     }
+
+                    settingsRow(title: language.text(.defaultOpacity)) {
+                        HStack(spacing: 10) {
+                            Slider(
+                                value: Binding(
+                                    get: { selectedOpacity },
+                                    set: {
+                                        selectedOpacity = StickerNote.clampedOpacity($0)
+                                        NoteStore.saveDefaultOpacity(selectedOpacity)
+                                        onChange?()
+                                    }
+                                ),
+                                in: 0.7...1,
+                                step: 0.05
+                            )
+                            Text("\(Int((selectedOpacity * 100).rounded()))%")
+                                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 42, alignment: .trailing)
+                        }
+                    }
+
+                    settingsRow(title: language.text(.liquidGlass)) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Toggle(language.text(.liquidGlass), isOn: Binding(
+                                get: { usesLiquidGlass },
+                                set: {
+                                    usesLiquidGlass = $0
+                                    NoteStore.saveDefaultLiquidGlassEnabled($0)
+                                    onChange?()
+                                }
+                            ))
+                            .labelsHidden()
+
+                            Text(language.text(.liquidGlassDescription))
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 }
 
                 Divider()
@@ -131,7 +172,7 @@ struct SettingsView: View {
             }
             .padding(22)
         }
-        .frame(width: 460, height: 420)
+        .frame(width: 460, height: 520)
     }
 
     private func settingsRow<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
