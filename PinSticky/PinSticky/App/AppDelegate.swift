@@ -11,7 +11,7 @@ private func fourCharacterCode(_ string: String) -> OSType {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var language = NoteStore.savedLanguage()
     private var defaultThemeID = NoteStore.savedDefaultThemeID()
     private var defaultTextColor = NoteStore.savedDefaultTextColor()
@@ -201,6 +201,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         window.title = language.text(.settings)
         window.isReleasedWhenClosed = false
+        window.delegate = self
         window.center()
         window.contentView = NSHostingView(rootView: SettingsView(
             onChange: { [weak self] in
@@ -230,6 +231,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         window.title = language.text(.shortcutSettings)
         window.isReleasedWhenClosed = false
+        window.delegate = self
         window.center()
         window.contentView = NSHostingView(rootView: ShortcutSettingsView(onChange: { [weak self] in
             self?.refreshPreferencesFromSettings()
@@ -254,6 +256,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         window.title = language.text(.noteList)
         window.isReleasedWhenClosed = false
+        window.delegate = self
         window.center()
         updateNoteListWindowContent(window)
         window.makeKeyAndOrderFront(nil)
@@ -276,6 +279,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         window.title = language.text(.restoreDeletedNotes)
         window.isReleasedWhenClosed = false
+        window.delegate = self
         window.minSize = NSSize(width: 460, height: 420)
         window.maxSize = NSSize(width: 460, height: 420)
         window.center()
@@ -335,18 +339,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let menu = NSMenu()
         menu.addItem(newNoteMenuItem())
-        menu.addItem(statusMenuItem(title: language.text(.noteList), action: #selector(showNoteList), shortcutAction: .noteList))
-        menu.addItem(statusMenuItem(title: language.text(.showNote), action: #selector(showNote), shortcutAction: .showAll))
+        menu.addItem(statusMenuItem(title: language.text(.noteList), iconName: "list.bullet.rectangle", action: #selector(showNoteList), shortcutAction: .noteList))
+        menu.addItem(statusMenuItem(title: language.text(.showNote), iconName: "rectangle.stack", action: #selector(showNote), shortcutAction: .showAll))
         menu.addItem(.separator())
-        menu.addItem(statusMenuItem(title: language.text(.collapseExpand), action: #selector(toggleCollapse), shortcutAction: .collapseExpand))
-        menu.addItem(statusMenuItem(title: language.text(.nextTheme), action: #selector(cycleTheme), shortcutAction: .nextTheme))
-        menu.addItem(statusMenuItem(title: language.text(.closeNote), action: #selector(closeNote), shortcutAction: .closeNote))
+        menu.addItem(statusMenuItem(title: language.text(.collapseExpand), iconName: "arrow.down.right.and.arrow.up.left", action: #selector(toggleCollapse), shortcutAction: .collapseExpand))
+        menu.addItem(statusMenuItem(title: language.text(.nextTheme), iconName: "paintpalette", action: #selector(cycleTheme), shortcutAction: .nextTheme))
+        menu.addItem(statusMenuItem(title: language.text(.closeNote), iconName: "xmark.circle", action: #selector(closeNote), shortcutAction: .closeNote))
         menu.addItem(.separator())
-        menu.addItem(statusMenuItem(title: language.text(.restoreDeletedNotes), action: #selector(showDeletedNotesRestore)))
+        menu.addItem(statusMenuItem(title: language.text(.restoreDeletedNotes), iconName: "arrow.clockwise.circle", action: #selector(showDeletedNotesRestore)))
         menu.addItem(.separator())
-        menu.addItem(statusMenuItem(title: language.text(.settings), action: #selector(showSettings), shortcutAction: .settings))
-        menu.addItem(statusMenuItem(title: language.text(.about), action: #selector(showAbout)))
-        menu.addItem(statusMenuItem(title: language.text(.quit), action: #selector(quit), shortcutAction: .quit))
+        menu.addItem(statusMenuItem(title: language.text(.settings), iconName: "gearshape", action: #selector(showSettings), shortcutAction: .settings))
+        menu.addItem(statusMenuItem(title: language.text(.about), iconName: "info.circle", action: #selector(showAbout)))
+        menu.addItem(statusMenuItem(title: language.text(.quit), iconName: "power", action: #selector(quit), shortcutAction: .quit))
 
         item.menu = menu
         statusItem = item
@@ -651,18 +655,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return nil
     }
 
-    private func statusMenuItem(title: String, action: Selector, shortcutAction: AppShortcutAction? = nil) -> NSMenuItem {
+    private func statusMenuItem(
+        title: String,
+        iconName: String,
+        action: Selector,
+        shortcutAction: AppShortcutAction? = nil
+    ) -> NSMenuItem {
         let shortcut = shortcutAction?.savedShortcut()
         let item = NSMenuItem(title: title, action: action, keyEquivalent: shortcut?.keyEquivalent ?? "")
         if let shortcut {
             item.keyEquivalentModifierMask = shortcut.menuModifierMask
         }
         item.target = self
+        item.image = statusMenuIcon(named: iconName)
         return item
     }
 
     private func newNoteMenuItem() -> NSMenuItem {
         let item = NSMenuItem(title: language.text(.newNote), action: nil, keyEquivalent: "")
+        item.image = statusMenuIcon(named: "square.and.pencil")
         let submenu = NSMenu()
 
         let defaultItem = NSMenuItem(
@@ -686,6 +697,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         item.submenu = submenu
         return item
+    }
+
+    private func statusMenuIcon(named name: String) -> NSImage? {
+        let image = NSImage(systemSymbolName: name, accessibilityDescription: nil)
+        image?.isTemplate = true
+        return image
     }
 
     private func allNotesPinningMenuItem() -> NSMenuItem {
@@ -741,6 +758,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.addButton(withTitle: language.text(.no))
         alert.alertStyle = .warning
         return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow else { return }
+        if window === settingsWindow {
+            settingsWindow = nil
+        } else if window === shortcutSettingsWindow {
+            shortcutSettingsWindow = nil
+        } else if window === noteListWindow {
+            noteListWindow = nil
+        } else if window === deletedNotesWindow {
+            deletedNotesWindow = nil
+        }
     }
 }
 
@@ -863,6 +893,9 @@ private extension AppDelegate {
         case .nextTheme:
             cycleTheme()
         case .closeNote:
+            if closeKeyWindowIfNeeded() {
+                return true
+            }
             closeNote()
         case .settings:
             showSettings()
@@ -871,6 +904,20 @@ private extension AppDelegate {
         default:
             return false
         }
+        return true
+    }
+
+    func closeKeyWindowIfNeeded() -> Bool {
+        guard let keyWindow = NSApp.keyWindow else { return false }
+        guard keyWindow === settingsWindow
+            || keyWindow === shortcutSettingsWindow
+            || keyWindow === noteListWindow
+            || keyWindow === deletedNotesWindow
+            || keyWindow.className == "NSPanel" && keyWindow.title.contains("PinSticky") else {
+            return false
+        }
+
+        keyWindow.performClose(nil)
         return true
     }
 }

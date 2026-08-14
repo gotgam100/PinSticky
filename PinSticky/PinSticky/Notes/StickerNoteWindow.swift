@@ -127,8 +127,8 @@ final class StickerNoteWindow: NSPanel {
     }
 
     private func resizeAreaContains(_ point: NSPoint) -> Bool {
-        let edgeThickness: CGFloat = 14
-        let cornerSize: CGFloat = 28
+        let edgeThickness: CGFloat = 18
+        let cornerSize: CGFloat = 30
         let width = frame.width
         let height = frame.height
         guard width > edgeThickness, height > edgeThickness else { return false }

@@ -533,11 +533,6 @@ private final class ClearHostingView<Content: View>: NSHostingView<Content> {
 
     override func resetCursorRects() {
         super.resetCursorRects()
-
-        guard !allowsTransparentTopHitTesting else { return }
-        for area in resizeCursorAreas {
-            addCursorRect(area.rect, cursor: area.cursor)
-        }
     }
 
     private func configureClearLayer() {
@@ -557,42 +552,6 @@ private final class ClearHostingView<Content: View>: NSHostingView<Content> {
             width: min(width, bounds.width),
             height: height
         )
-    }
-
-    private var resizeCursorAreas: [(rect: NSRect, cursor: NSCursor)] {
-        let edgeThickness: CGFloat = 14
-        let cornerSize: CGFloat = 28
-        guard bounds.height > edgeThickness, bounds.width > edgeThickness else { return [] }
-
-        let sideHeight = max(0, bounds.height - NoteView.toolbarHeight - cornerSize)
-        let bottomWidth = max(0, bounds.width - cornerSize * 2)
-        return [
-            (
-                visualRect(x: 0, yFromTop: NoteView.toolbarHeight, width: edgeThickness, height: sideHeight),
-                .resizeLeftRight
-            ),
-            (
-                visualRect(x: bounds.width - edgeThickness, yFromTop: NoteView.toolbarHeight, width: edgeThickness, height: sideHeight),
-                .resizeLeftRight
-            ),
-            (
-                visualRect(x: cornerSize, yFromTop: bounds.height - edgeThickness, width: bottomWidth, height: edgeThickness),
-                .resizeUpDown
-            ),
-            (
-                visualRect(x: 0, yFromTop: bounds.height - cornerSize, width: cornerSize, height: cornerSize),
-                .resizeLeftRight
-            ),
-            (
-                visualRect(x: bounds.width - cornerSize, yFromTop: bounds.height - cornerSize, width: cornerSize, height: cornerSize),
-                .resizeLeftRight
-            )
-        ]
-    }
-
-    private func visualRect(x: CGFloat, yFromTop: CGFloat, width: CGFloat, height: CGFloat) -> NSRect {
-        let y = isFlipped ? yFromTop : bounds.height - yFromTop - height
-        return NSRect(x: x, y: y, width: width, height: height)
     }
 
 }
