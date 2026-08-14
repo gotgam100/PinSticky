@@ -403,6 +403,7 @@ enum GlobalNewNoteShortcut {
 
 enum NoteDisplayMode: String, Codable, Equatable {
     case always
+    case unpinned
     case whenAppIsActive
 }
 
@@ -483,6 +484,8 @@ enum AppLanguage: String, CaseIterable, Equatable {
         case (.english, .currentMode): "Current Mode"
         case (.korean, .alwaysVisible): "항상 표시"
         case (.english, .alwaysVisible): "Always Visible"
+        case (.korean, .unpinned): "종속 없음"
+        case (.english, .unpinned): "No Pinning"
         case (.korean, .attachedTo): "연결된 앱"
         case (.english, .attachedTo): "Attached App"
         case (.korean, .attachToFrontmost): "현재 활성 앱에 붙이기"
@@ -607,6 +610,7 @@ enum AppText {
     case pinMenu
     case currentMode
     case alwaysVisible
+    case unpinned
     case attachedTo
     case attachToFrontmost
     case clearAttachment

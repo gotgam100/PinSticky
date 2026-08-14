@@ -14,6 +14,7 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
     private let noteFrameChanged: () -> Void
     private let selectionState: NoteSelectionState
     private let attachNotes: (NoteStore, RunningApplicationInfo?) -> Void
+    private let unpinNotes: (NoteStore) -> Void
     private let updateThemeForSelection: (NoteStore, String) -> Void
     private let updateFontSizeForSelection: (NoteStore, Double) -> Void
     private let collapseSelection: (NoteStore) -> Void
@@ -39,6 +40,7 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
         noteFrameChanged: @escaping () -> Void,
         selectionState: NoteSelectionState,
         attachNotes: @escaping (NoteStore, RunningApplicationInfo?) -> Void,
+        unpinNotes: @escaping (NoteStore) -> Void,
         updateThemeForSelection: @escaping (NoteStore, String) -> Void,
         updateFontSizeForSelection: @escaping (NoteStore, Double) -> Void,
         collapseSelection: @escaping (NoteStore) -> Void,
@@ -51,6 +53,7 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
         self.noteFrameChanged = noteFrameChanged
         self.selectionState = selectionState
         self.attachNotes = attachNotes
+        self.unpinNotes = unpinNotes
         self.updateThemeForSelection = updateThemeForSelection
         self.updateFontSizeForSelection = updateFontSizeForSelection
         self.collapseSelection = collapseSelection
@@ -93,14 +96,18 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
         applyContent()
     }
 
-    func show(forceVisible: Bool = false, resetManualHidden: Bool = true) {
+    func show(
+        forceVisible: Bool = false,
+        resetManualHidden: Bool = true,
+        animateAppearance: Bool = false
+    ) {
         if resetManualHidden {
             isManuallyHidden = false
         }
         applyContent()
         if forceVisible {
             if !isManuallyHidden {
-                showWindow(animated: false)
+                showWindow(animated: animateAppearance, bounces: animateAppearance)
             }
         } else {
             refreshVisibilityWithCurrentContext()
@@ -172,6 +179,8 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
         switch store.note.displayMode {
         case .always:
             showWindow(animated: true)
+        case .unpinned:
+            showWindow(animated: true)
         case .whenAppIsActive:
             if let bundleIdentifier = store.note.attachedBundleIdentifier,
                frontmostBundleIdentifier == bundleIdentifier,
@@ -214,7 +223,24 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
 
     func bringToFront() {
         guard window.isVisible else { return }
+        orderWindowFront()
+    }
+
+    func bringToFrontForActiveSelection() {
+        guard window.isVisible else { return }
+        if store.note.displayMode == .unpinned {
+            window.level = .floating
+        }
         window.orderFrontRegardless()
+    }
+
+    func bringToFrontForTemporaryReveal() {
+        guard window.isVisible else { return }
+        window.orderFrontRegardless()
+    }
+
+    func restoreDefaultWindowLevel() {
+        window.applyLevel(for: store.note.displayMode)
     }
 
     func setHasOverlap(_ hasOverlap: Bool) {
@@ -236,7 +262,6 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
 
     private func selectAndBringToFront() {
         activateNote(store.note.id)
-        bringToFront()
     }
 
     private func applyContent(animated: Bool = false) {
@@ -245,6 +270,7 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
         if store.note.isCollapsed {
             let dotOrigin = placementManager.clampedDotOrigin(store.note.collapsedOrigin.cgPoint)
             window.applyCollapsedStyle()
+            window.applyLevel(for: store.note.displayMode)
             setFrame(collapsedWindowFrame(forDotOrigin: dotOrigin), animated: animated, isCollapsing: true)
             window.contentView = ClearHostingView(allowsTransparentTopHitTesting: true, rootView: DotView(
                 store: store,
@@ -260,6 +286,7 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
         } else {
             let frame = placementManager.clampedFrame(store.note.expandedFrame.cgRect)
             window.applyExpandedStyle()
+            window.applyLevel(for: store.note.displayMode)
             setFrame(Self.windowFrame(forNoteFrame: frame), animated: animated, isCollapsing: false)
             window.contentView = ClearHostingView(allowsTransparentTopHitTesting: false, rootView: NoteView(
                 store: store,
@@ -277,6 +304,8 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
                 self?.shakeForAttachment()
             } attachNotes: { [attachNotes, store] application in
                 attachNotes(store, application)
+            } unpinNotes: { [unpinNotes, store] in
+                unpinNotes(store)
             } updateThemeForSelection: { [updateThemeForSelection, store] themeID in
                 updateThemeForSelection(store, themeID)
             } updateFontSizeForSelection: { [updateFontSizeForSelection, store] delta in
@@ -400,7 +429,7 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
             || reachedResizeFloor
     }
 
-    private func showWindow(animated: Bool) {
+    private func showWindow(animated: Bool, bounces: Bool = false) {
         guard !isVisible || !window.isVisible else {
             return
         }
@@ -408,12 +437,17 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
         isVisible = true
         guard animated else {
             window.alphaValue = 1
-            window.orderFrontRegardless()
+            orderWindowFront()
+            return
+        }
+
+        if bounces {
+            animateWindowAppearance()
             return
         }
 
         window.alphaValue = 0
-        window.orderFrontRegardless()
+        orderWindowFront()
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.12
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
@@ -443,10 +477,85 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
         }
     }
 
-    func close() {
+    private func animateWindowAppearance() {
+        let finalFrame = window.frame
+        let startFrame = scaledFrame(from: finalFrame, scale: 0.96).offsetBy(dx: 0, dy: -4)
+        let overshootFrame = scaledFrame(from: finalFrame, scale: 1.015).offsetBy(dx: 0, dy: 2)
+
+        window.alphaValue = 0
+        window.setFrame(startFrame, display: true)
+        orderWindowFront()
+
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.13
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            window.animator().alphaValue = 1
+            window.animator().setFrame(overshootFrame, display: true)
+        } completionHandler: {
+            Task { @MainActor in
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = 0.14
+                    context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                    self.window.animator().setFrame(finalFrame, display: true)
+                }
+            }
+        }
+    }
+
+    private func animateWindowDisappearance(completion: @escaping @MainActor @Sendable () -> Void) {
+        guard window.isVisible else {
+            completion()
+            return
+        }
+
+        let finalFrame = window.frame
+        let endFrame = scaledFrame(from: finalFrame, scale: 0.965).offsetBy(dx: 0, dy: -3)
+
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.14
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            window.animator().alphaValue = 0
+            window.animator().setFrame(endFrame, display: true)
+        } completionHandler: {
+            Task { @MainActor in
+                self.window.setFrame(finalFrame, display: false)
+                self.window.alphaValue = 1
+                completion()
+            }
+        }
+    }
+
+    private func scaledFrame(from frame: CGRect, scale: CGFloat) -> CGRect {
+        CGRect(
+            x: frame.midX - frame.width * scale / 2,
+            y: frame.midY - frame.height * scale / 2,
+            width: frame.width * scale,
+            height: frame.height * scale
+        )
+    }
+
+    private func orderWindowFront() {
+        if store.note.displayMode == .unpinned {
+            window.orderFront(nil)
+        } else {
+            window.orderFrontRegardless()
+        }
+    }
+
+    func close(animated: Bool = false, completion: (@MainActor @Sendable () -> Void)? = nil) {
         window.delegate = nil
-        window.orderOut(nil)
-        window.close()
+        let finish: @MainActor @Sendable () -> Void = { [window, completion] in
+            window.orderOut(nil)
+            window.close()
+            completion?()
+        }
+
+        guard animated else {
+            finish()
+            return
+        }
+
+        animateWindowDisappearance(completion: finish)
     }
 
     func hide() {
@@ -506,6 +615,13 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
         let nextSnapshot = PresentationSnapshot(note: note)
         guard nextSnapshot != presentationSnapshot else { return }
 
+        if nextSnapshot.displayMode != presentationSnapshot.displayMode {
+            window.applyLevel(for: note.displayMode)
+            if note.displayMode != .unpinned, window.isVisible {
+                orderWindowFront()
+            }
+        }
+
         if nextSnapshot.isCollapsed != presentationSnapshot.isCollapsed {
             applyContent(animated: true)
             return
@@ -539,11 +655,13 @@ private struct PresentationSnapshot: Equatable {
     let isCollapsed: Bool
     let expandedFrame: CodableRect
     let collapsedOrigin: CodablePoint
+    let displayMode: NoteDisplayMode
 
     init(note: StickerNote) {
         isCollapsed = note.isCollapsed
         expandedFrame = note.expandedFrame
         collapsedOrigin = note.collapsedOrigin
+        displayMode = note.displayMode
     }
 }
 

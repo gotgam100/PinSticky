@@ -24,7 +24,7 @@ final class StickerNoteWindow: NSPanel {
         isReleasedWhenClosed = false
         hidesOnDeactivate = false
         level = .floating
-        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        applyCollectionBehavior()
         backgroundColor = .clear
         isOpaque = false
         hasShadow = false
@@ -111,6 +111,20 @@ final class StickerNoteWindow: NSPanel {
         hasShadow = false
         minSize = NSSize(width: NoteView.collapsedDotHitSize, height: NoteView.collapsedDotHitSize)
         hideStandardWindowButtons()
+    }
+
+    func applyLevel(for displayMode: NoteDisplayMode) {
+        level = displayMode == .unpinned ? .normal : .floating
+        applyCollectionBehavior()
+    }
+
+    private func applyCollectionBehavior() {
+        collectionBehavior = [
+            .canJoinAllSpaces,
+            .fullScreenAuxiliary,
+            .transient,
+            .ignoresCycle
+        ]
     }
 
     private func configureExpandedChrome() {

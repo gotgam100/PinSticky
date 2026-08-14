@@ -10,6 +10,7 @@ struct NoteView: View {
     let collapse: () -> Void
     let attachmentDragSucceeded: () -> Void
     let attachNotes: (RunningApplicationInfo?) -> Void
+    let unpinNotes: () -> Void
     let updateThemeForSelection: (String) -> Void
     let updateFontSizeForSelection: (Double) -> Void
     let collapseSelection: () -> Void
@@ -79,6 +80,7 @@ struct NoteView: View {
                     collapse: collapse,
                     attachmentDragSucceeded: attachmentDragSucceeded,
                     attachNotes: attachNotes,
+                    unpinNotes: unpinNotes,
                     updateThemeForSelection: updateThemeForSelection,
                     updateFontSizeForSelection: updateFontSizeForSelection,
                     collapseSelection: collapseSelection
@@ -119,6 +121,7 @@ private struct NoteHoverControls: View {
     let collapse: () -> Void
     let attachmentDragSucceeded: () -> Void
     let attachNotes: (RunningApplicationInfo?) -> Void
+    let unpinNotes: () -> Void
     let updateThemeForSelection: (String) -> Void
     let updateFontSizeForSelection: (Double) -> Void
     let collapseSelection: () -> Void
@@ -174,24 +177,12 @@ private struct NoteHoverControls: View {
     }
 
     private var themeMenu: some View {
-        Menu {
-            ForEach(BuiltInThemes.all) { candidate in
-                Button {
-                    updateThemeForSelection(candidate.id)
-                } label: {
-                    HStack {
-                        Circle()
-                            .fill(candidate.backgroundColor)
-                            .frame(width: 10, height: 10)
-                        Text(candidate.displayName(language: store.language))
-                    }
-                }
-            }
-        } label: {
-            Image(systemName: "paintpalette.fill")
-        }
-        .menuStyle(.button)
-        .buttonStyle(.plain)
+        ThemeSelectionButton(
+            store: store,
+            theme: theme,
+            updateThemeForSelection: updateThemeForSelection
+        )
+            .frame(width: 15, height: 15)
     }
 
     private var characterAttributesMenu: some View {
@@ -244,15 +235,7 @@ private struct NoteHoverControls: View {
 
     @ViewBuilder
     private func characterAttributeLabel(title: String, systemImage: String, isActive: Bool) -> some View {
-        HStack {
-            Image(systemName: systemImage)
-                .frame(width: 14)
-            Text(title)
-            if isActive {
-                Spacer()
-                Image(systemName: "checkmark")
-            }
-        }
+        Label(isActive ? "\(title)  ✓" : title, systemImage: systemImage)
     }
 
     private func requestCharacterAttribute(_ action: NoteCharacterAttributeAction) {
@@ -271,13 +254,17 @@ private struct NoteHoverControls: View {
             store: store,
             theme: theme,
             attachmentDragSucceeded: attachmentDragSucceeded,
-            attachNotes: attachNotes
+            attachNotes: attachNotes,
+            unpinNotes: unpinNotes
         )
             .frame(width: 15, height: 15)
     }
 
     private var currentPinningDescription: String {
         guard store.note.displayMode == .whenAppIsActive else {
+            if store.note.displayMode == .unpinned {
+                return store.language.text(.unpinned)
+            }
             return store.language.text(.alwaysVisible)
         }
 
@@ -291,6 +278,7 @@ private struct PinAttachmentButton: NSViewRepresentable {
     let theme: NoteTheme
     let attachmentDragSucceeded: () -> Void
     let attachNotes: (RunningApplicationInfo?) -> Void
+    let unpinNotes: () -> Void
 
     func makeNSView(context: Context) -> DraggablePinButton {
         let button = DraggablePinButton(frame: NSRect(x: 0, y: 0, width: 15, height: 15))
@@ -307,7 +295,7 @@ private struct PinAttachmentButton: NSViewRepresentable {
         button.image = NSImage(systemSymbolName: store.note.displayMode == .whenAppIsActive ? "pin.fill" : "pin", accessibilityDescription: nil)
         button.contentTintColor = NSColor(hex: theme.foreground)
         button.onClick = { [weak store] sourceView in
-            guard let store else { return }
+            guard let store, sourceView.window != nil else { return }
             makeMenu(for: store).popUp(positioning: nil, at: NSPoint(x: -8, y: sourceView.bounds.maxY + 6), in: sourceView)
         }
         button.onDragEnd = {
@@ -329,15 +317,19 @@ private struct PinAttachmentButton: NSViewRepresentable {
         menu.addItem(currentModeItem)
         menu.addItem(.separator())
 
-        let pinMenuHeader = NSMenuItem(title: store.language.text(.pinMenu), action: nil, keyEquivalent: "")
-        pinMenuHeader.isEnabled = false
-        menu.addItem(pinMenuHeader)
-
         let alwaysItem = PinAttachmentMenuItem(title: store.language.text(.alwaysVisible)) {
             attachNotes(nil)
         }
         alwaysItem.state = store.note.displayMode == .always ? .on : .off
         menu.addItem(alwaysItem)
+
+        let unpinnedItem = PinAttachmentMenuItem(title: store.language.text(.unpinned)) {
+            unpinNotes()
+        }
+        unpinnedItem.state = store.note.displayMode == .unpinned ? .on : .off
+        menu.addItem(unpinnedItem)
+
+        menu.addItem(.separator())
 
         runningApps.forEach { app in
             let item = PinAttachmentMenuItem(title: app.name) {
@@ -347,18 +339,14 @@ private struct PinAttachmentButton: NSViewRepresentable {
             menu.addItem(item)
         }
 
-        if store.note.displayMode == .whenAppIsActive {
-            menu.addItem(.separator())
-            menu.addItem(PinAttachmentMenuItem(title: store.language.text(.clearAttachment)) {
-                attachNotes(nil)
-            })
-        }
-
         return menu
     }
 
     private func currentPinningDescription(for store: NoteStore) -> String {
         guard store.note.displayMode == .whenAppIsActive else {
+            if store.note.displayMode == .unpinned {
+                return store.language.text(.unpinned)
+            }
             return store.language.text(.alwaysVisible)
         }
 
@@ -374,6 +362,65 @@ private struct PinAttachmentButton: NSViewRepresentable {
             .sorted {
                 $0.name < $1.name
             }
+    }
+}
+
+private struct ThemeSelectionButton: NSViewRepresentable {
+    @ObservedObject var store: NoteStore
+    let theme: NoteTheme
+    let updateThemeForSelection: (String) -> Void
+
+    func makeNSView(context: Context) -> MenuIconButton {
+        let button = MenuIconButton(frame: NSRect(x: 0, y: 0, width: 15, height: 15))
+        button.isBordered = false
+        button.bezelStyle = .shadowlessSquare
+        button.imagePosition = .imageOnly
+        button.imageScaling = .scaleProportionallyDown
+        button.focusRingType = .none
+        button.setButtonType(.momentaryChange)
+        return button
+    }
+
+    func updateNSView(_ button: MenuIconButton, context: Context) {
+        button.image = NSImage(systemSymbolName: "paintpalette.fill", accessibilityDescription: nil)
+        button.contentTintColor = NSColor(hex: theme.foreground)
+        button.onClick = { sourceView in
+            guard sourceView.window != nil else { return }
+            makeMenu().popUp(positioning: nil, at: NSPoint(x: -8, y: sourceView.bounds.maxY + 6), in: sourceView)
+        }
+    }
+
+    private func makeMenu() -> NSMenu {
+        let menu = NSMenu()
+        BuiltInThemes.all.forEach { candidate in
+            let item = PinAttachmentMenuItem(title: candidate.displayName(language: store.language)) {
+                updateThemeForSelection(candidate.id)
+            }
+            item.image = themeSwatchImage(candidate)
+            item.state = store.note.themeID == candidate.id ? .on : .off
+            menu.addItem(item)
+        }
+        return menu
+    }
+
+    private func themeSwatchImage(_ theme: NoteTheme) -> NSImage {
+        let image = NSImage(size: NSSize(width: 16, height: 16))
+        image.lockFocus()
+        NSColor(hex: theme.background).setFill()
+        NSBezierPath(roundedRect: NSRect(x: 2, y: 2, width: 12, height: 12), xRadius: 3, yRadius: 3).fill()
+        NSColor.black.withAlphaComponent(0.18).setStroke()
+        NSBezierPath(roundedRect: NSRect(x: 2, y: 2, width: 12, height: 12), xRadius: 3, yRadius: 3).stroke()
+        image.unlockFocus()
+        image.isTemplate = false
+        return image
+    }
+}
+
+private final class MenuIconButton: NSButton {
+    var onClick: ((NSView) -> Void)?
+
+    override func mouseDown(with event: NSEvent) {
+        onClick?(self)
     }
 }
 
@@ -469,10 +516,11 @@ private final class PinDragPreviewWindow: NSPanel {
     }
 }
 
+@MainActor
 private final class PinAttachmentMenuItem: NSMenuItem {
-    private let handler: () -> Void
+    private let handler: @MainActor () -> Void
 
-    init(title: String, handler: @escaping () -> Void) {
+    init(title: String, handler: @escaping @MainActor () -> Void) {
         self.handler = handler
         super.init(title: title, action: #selector(runHandler), keyEquivalent: "")
         target = self
@@ -483,7 +531,9 @@ private final class PinAttachmentMenuItem: NSMenuItem {
     }
 
     @objc private func runHandler() {
-        handler()
+        Task { @MainActor in
+            handler()
+        }
     }
 }
 

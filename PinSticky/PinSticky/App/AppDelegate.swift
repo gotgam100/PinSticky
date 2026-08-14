@@ -68,6 +68,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         false
     }
 
+    func applicationDidResignActive(_ notification: Notification) {
+        restoreNoteWindowLevels()
+    }
+
     @objc private func showNote() {
         guard hasOpenNoteWindow else {
             isShowingAllNotesUntilAppSwitch = false
@@ -128,6 +132,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             if notification.name == NSWorkspace.didActivateApplicationNotification,
                application.processIdentifier != ProcessInfo.processInfo.processIdentifier {
                 isShowingAllNotesUntilAppSwitch = false
+                restoreNoteWindowLevels()
             }
             lastExternalFrontmostBundleIdentifier = bundleIdentifier
             lastExternalFrontmostPID = application.processIdentifier
@@ -390,7 +395,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         stores.forEach { store in
             show(store: store, activateShownNote: false, resetManualHidden: false)
-            noteWindowControllers[store.note.id]?.revealIfHiddenByAttachment()
+            let controller = noteWindowControllers[store.note.id]
+            controller?.revealIfHiddenByAttachment()
+            controller?.bringToFrontForTemporaryReveal()
         }
         refreshOverlapOutlines()
     }
@@ -448,6 +455,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         resetManualHidden: Bool = true
     ) {
         guard stores.contains(where: { $0.note.id == store.note.id }) else { return }
+        let isNewController = noteWindowControllers[store.note.id] == nil
         let controller = noteWindowControllers[store.note.id] ?? NoteWindowController(
             store: store,
             newNote: { [weak self] sourceFrame in
@@ -466,6 +474,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             attachNotes: { [weak self] sourceStore, application in
                 self?.attachHeaderSelectedNotes(source: sourceStore, to: application)
             },
+            unpinNotes: { [weak self] sourceStore in
+                self?.unpinHeaderSelectedNotes(source: sourceStore)
+            },
             updateThemeForSelection: { [weak self] sourceStore, themeID in
                 self?.updateHeaderSelectedNotesTheme(source: sourceStore, themeID: themeID)
             },
@@ -483,7 +494,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if activateShownNote {
             activate(noteID: store.note.id)
         }
-        controller.show(forceVisible: forceVisible, resetManualHidden: resetManualHidden)
+        controller.show(
+            forceVisible: forceVisible,
+            resetManualHidden: resetManualHidden,
+            animateAppearance: isNewController
+        )
         refreshOverlapOutlines()
     }
 
@@ -499,8 +514,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func activate(noteID: UUID) {
         activeNoteID = noteID
-        noteWindowControllers[noteID]?.bringToFront()
+        restoreNoteWindowLevels()
+        noteWindowControllers[noteID]?.bringToFrontForActiveSelection()
         refreshOverlapOutlines()
+    }
+
+    private func restoreNoteWindowLevels() {
+        noteWindowControllers.values.forEach { $0.restoreDefaultWindowLevel() }
     }
 
     private func headerSelectedStores(source: NoteStore) -> [NoteStore] {
@@ -518,6 +538,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         } else {
             targetStores.forEach { $0.setAlwaysVisible() }
         }
+        refreshNoteVisibilityForVisibleApps()
+        updateNoteListWindowContent()
+    }
+
+    private func unpinHeaderSelectedNotes(source: NoteStore) {
+        headerSelectedStores(source: source).forEach { $0.setUnpinned() }
         refreshNoteVisibilityForVisibleApps()
         updateNoteListWindowContent()
     }
@@ -558,7 +584,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func deleteNote(id: UUID) {
-        noteWindowControllers[id]?.close()
+        noteWindowControllers[id]?.close(animated: true)
         noteWindowControllers[id] = nil
         noteSelectionState.remove(id)
         if let index = stores.firstIndex(where: { $0.note.id == id }) {

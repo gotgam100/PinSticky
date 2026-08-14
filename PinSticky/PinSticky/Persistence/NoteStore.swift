@@ -410,6 +410,14 @@ final class NoteStore: ObservableObject {
         }
     }
 
+    func setUnpinned() {
+        mutateNote { note in
+            note.displayMode = .unpinned
+            note.attachedAppName = nil
+            note.attachedBundleIdentifier = nil
+        }
+    }
+
     func attach(to application: RunningApplicationInfo?) {
         guard let application else {
             return

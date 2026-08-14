@@ -243,6 +243,8 @@ private struct NoteListRowView: View {
         switch note.displayMode {
         case .always:
             return language.text(.alwaysVisible)
+        case .unpinned:
+            return language.text(.unpinned)
         case .whenAppIsActive:
             let appName = attachedAppName(for: note)
             return appName

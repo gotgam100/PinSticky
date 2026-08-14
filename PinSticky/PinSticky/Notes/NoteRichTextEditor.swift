@@ -679,8 +679,7 @@ final class PinStickyTextEditorContainer: NSView {
 
     func configureTextLayout() {
         guard let textView,
-              let textContainer = textView.textContainer,
-              let layoutManager = textView.layoutManager else { return }
+              let textContainer = textView.textContainer else { return }
 
         let size = NSSize(width: max(bounds.width, 1), height: max(bounds.height, 1))
 
@@ -697,7 +696,6 @@ final class PinStickyTextEditorContainer: NSView {
         textView.isHorizontallyResizable = false
         textView.needsDisplay = true
         needsDisplay = true
-        layoutManager.ensureLayout(for: textContainer)
     }
 }
 
