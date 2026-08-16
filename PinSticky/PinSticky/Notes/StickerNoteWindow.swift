@@ -1,16 +1,82 @@
 import AppKit
+import ObjectiveC
 
 final class StickerNoteWindow: NSPanel {
-    var noteMouseDownHandler: (() -> Void)?
+    var noteMouseDownHandler: ((Bool) -> Void)?
+    var noteMouseUpHandler: (() -> Void)?
+    var noteMouseDraggedHandler: ((CGPoint) -> Void)?
+    /// Called with (sizeDelta, originDelta) whenever the window's own
+    /// resize (from any edge/corner) actually changes its size. Both
+    /// deltas matter, not just the resulting size: resizing from the left
+    /// edge grows the window while also shifting its origin left, and a
+    /// selected sibling needs to replicate *that same shift*, not just end
+    /// up at the same size - otherwise it grows from the opposite edge,
+    /// mirrored.
+    var noteWindowResizedHandler: ((CGSize, CGPoint) -> Void)?
     var noteShortcutHandler: ((PinStickyShortcutKey) -> Bool)?
     var collapsedClickHandler: (() -> Void)?
     var collapsedDragEndedHandler: (() -> Void)?
     var pinchHandler: ((CGFloat) -> Void)?
+    var hoverHandler: (() -> Void)?
+    var stackSwipeHandler: ((Int) -> Void)?
 
-    private static let expandedStyleMask: NSWindow.StyleMask = [.borderless, .resizable]
+    var isProgrammaticallyMoving = false
+
+    // `.nonactivatingPanel` lets the panel receive events (clicks, and
+    // crucially passive trackpad scroll/swipe) while PinSticky isn't the
+    // frontmost app - without it, macOS only delivers a mouseDown (which
+    // activates the app as a side effect) to a background app's window, and
+    // hover-only gestures like a two-finger swipe never arrive at all. The
+    // collapsed dot already relied on this; the expanded note needs it too.
+    private static let expandedStyleMask: NSWindow.StyleMask = [.borderless, .resizable, .nonactivatingPanel]
     private var handlesCollapsedDotInteraction = false
     private var suppressesBackgroundMoveForResize = false
     private var accumulatedMagnification: CGFloat = 0
+    private var accumulatedSwipeX: CGFloat = 0
+    private var accumulatedSwipeY: CGFloat = 0
+
+    /// `NSAnimationContext`/`animator()` calls dispatch through a dynamically
+    /// created Objective-C proxy subclass whose Swift stored properties are
+    /// not valid to read (it is a distinct allocation from the real window).
+    /// Swift's `type(of:)` can report the *declared* class instead of the
+    /// proxy's swizzled `isa` on some OS versions, so we query the
+    /// Objective-C runtime directly, which always reflects the true class.
+    private var isAnimationProxy: Bool {
+        guard let runtimeClass = object_getClass(self) else { return false }
+        return NSStringFromClass(runtimeClass).contains("Animator")
+    }
+
+    override func setFrame(_ frameRect: NSRect, display flag: Bool) {
+        guard !isAnimationProxy else {
+            super.setFrame(frameRect, display: flag)
+            return
+        }
+
+        let originDelta = CGPoint(x: frameRect.origin.x - frame.origin.x, y: frameRect.origin.y - frame.origin.y)
+        let sizeDelta = CGSize(width: frameRect.width - frame.width, height: frameRect.height - frame.height)
+        super.setFrame(frameRect, display: flag)
+        if !isProgrammaticallyMoving {
+            if originDelta.x != 0 || originDelta.y != 0 {
+                noteMouseDraggedHandler?(originDelta)
+            }
+            if sizeDelta.width != 0 || sizeDelta.height != 0 {
+                noteWindowResizedHandler?(sizeDelta, originDelta)
+            }
+        }
+    }
+
+    override func setFrameOrigin(_ newOrigin: NSPoint) {
+        guard !isAnimationProxy else {
+            super.setFrameOrigin(newOrigin)
+            return
+        }
+
+        let originDelta = CGPoint(x: newOrigin.x - frame.origin.x, y: newOrigin.y - frame.origin.y)
+        super.setFrameOrigin(newOrigin)
+        if !isProgrammaticallyMoving && (originDelta.x != 0 || originDelta.y != 0) {
+            noteMouseDraggedHandler?(originDelta)
+        }
+    }
 
     init(frame: CGRect) {
         super.init(
@@ -28,6 +94,7 @@ final class StickerNoteWindow: NSPanel {
         backgroundColor = .clear
         isOpaque = false
         hasShadow = false
+        acceptsMouseMovedEvents = true
         contentView?.wantsLayer = true
         contentView?.layer?.borderWidth = 0
 
@@ -48,13 +115,22 @@ final class StickerNoteWindow: NSPanel {
         }
 
         if event.type == .leftMouseDown || event.type == .rightMouseDown {
-            noteMouseDownHandler?()
+            let isCommandPressed = event.modifierFlags.contains(.command)
+            noteMouseDownHandler?(isCommandPressed)
         }
+
+        if event.type == .scrollWheel {
+            trackStackSwipe(event)
+        }
+
         super.sendEvent(event)
 
-        if event.type == .leftMouseUp, suppressesBackgroundMoveForResize {
-            suppressesBackgroundMoveForResize = false
-            isMovableByWindowBackground = true
+        if event.type == .leftMouseUp {
+            if suppressesBackgroundMoveForResize {
+                suppressesBackgroundMoveForResize = false
+                isMovableByWindowBackground = true
+            }
+            noteMouseUpHandler?()
         }
     }
 
@@ -70,24 +146,98 @@ final class StickerNoteWindow: NSPanel {
         return super.performKeyEquivalent(with: event)
     }
 
-    override func magnify(with event: NSEvent) {
-        noteMouseDownHandler?()
+    /// Trackpad pinch (`magnify`) events, like scroll/swipe, are not
+    /// reliably forwarded up the responder chain to the window from every
+    /// subview - the note's `NSScrollView`-backed text editor in particular
+    /// can swallow them. `NoteEditorScrollView` also calls this directly
+    /// from its own `magnify(with:)` override so pinch-to-collapse/expand
+    /// works no matter where over the note the gesture starts. Returns
+    /// whether the pinch just triggered a collapse/expand, so callers can
+    /// decide whether to still let the event fall through to `super`.
+    @discardableResult
+    func trackPinchMagnification(_ event: NSEvent) -> Bool {
+        // Both the window's own `magnify(with:)` and `NoteEditorScrollView`
+        // can end up seeing the same physical pinch tick, so
+        // `accumulatedMagnification` may get double-counted per tick. That's
+        // relatively harmless on its own (it just reaches the toggle
+        // threshold with a bit less physical pinching); the reversing
+        // mid-gesture double-toggle it could cause is now guarded against
+        // where it actually matters, in `NoteWindowController.handlePinch`
+        // (skips any pinch tick while a collapse/expand transition is
+        // already animating).
+        //
+        // A previous version of this method also de-duplicated by
+        // `event.timestamp`, on the theory that both call sites see the
+        // literal same `NSEvent`. That backfired: magnify events apparently
+        // don't get a fresh timestamp per tick the way scroll events do, so
+        // every tick after the first in a gesture matched the "last seen"
+        // timestamp and was dropped - `accumulatedMagnification` could never
+        // climb past the very first, tiny tick, so pinch stopped
+        // registering at all.
+        //
+        // Only activate/reorder the window once, on the gesture's first
+        // tick - not on every single one. Calling `makeKeyAndOrderFront`
+        // repeatedly mid-gesture reorders the window server's view of
+        // things while the trackpad driver is still tracking which window
+        // the gesture belongs to, which looked like the likely cause of
+        // pinch intermittently dropping out mid-gesture or failing to
+        // register at all while hovering an inactive note.
+        if event.phase == .began || event.phase.isEmpty {
+            noteMouseDownHandler?(false)
+        }
         accumulatedMagnification += event.magnification
 
         if event.phase == .ended || event.phase == .cancelled {
             accumulatedMagnification = 0
-            super.magnify(with: event)
-            return
+            return false
         }
 
         let threshold: CGFloat = 0.22
-        guard abs(accumulatedMagnification) >= threshold else {
-            super.magnify(with: event)
-            return
-        }
+        guard abs(accumulatedMagnification) >= threshold else { return false }
 
         pinchHandler?(accumulatedMagnification)
         accumulatedMagnification = 0
+        return true
+    }
+
+    override func magnify(with event: NSEvent) {
+        if !trackPinchMagnification(event) {
+            super.magnify(with: event)
+        }
+    }
+
+    func prepareForHoverGesture() {
+        hoverHandler?()
+    }
+
+    /// Trackpad two-finger swipe events are ordinary `.scrollWheel` events.
+    /// We observe them in `sendEvent` so every part of the window sees them
+    /// even if no subview would otherwise forward the event up the
+    /// responder chain. Not private: `NoteEditorScrollView` (used by the
+    /// note's text editor, which covers most of the note's area) also calls
+    /// this directly from its own `scrollWheel(with:)`, since in practice
+    /// scroll events over that view were not reliably reaching this handler
+    /// through the normal dispatch path.
+    func trackStackSwipe(_ event: NSEvent) {
+        guard event.hasPreciseScrollingDeltas, stackSwipeHandler != nil else { return }
+
+        switch event.phase {
+        case .began:
+            accumulatedSwipeX = 0
+            accumulatedSwipeY = 0
+        case .changed:
+            accumulatedSwipeX += event.scrollingDeltaX
+            accumulatedSwipeY += event.scrollingDeltaY
+        case .ended, .cancelled:
+            let threshold: CGFloat = 80
+            if abs(accumulatedSwipeX) > abs(accumulatedSwipeY), abs(accumulatedSwipeX) >= threshold {
+                stackSwipeHandler?(accumulatedSwipeX < 0 ? 1 : -1)
+            }
+            accumulatedSwipeX = 0
+            accumulatedSwipeY = 0
+        default:
+            break
+        }
     }
 
     func applyExpandedStyle() {
@@ -175,7 +325,7 @@ final class StickerNoteWindow: NSPanel {
         }
 
         if event.type == .rightMouseDown {
-            noteMouseDownHandler?()
+            noteMouseDownHandler?(false)
             return false
         }
 
@@ -183,7 +333,7 @@ final class StickerNoteWindow: NSPanel {
     }
 
     private func trackCollapsedDotMouseSession() {
-        noteMouseDownHandler?()
+        noteMouseDownHandler?(false)
 
         let dragThreshold: CGFloat = 16
         let startOrigin = frame.origin

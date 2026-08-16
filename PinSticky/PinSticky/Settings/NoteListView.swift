@@ -96,7 +96,7 @@ struct NoteListView: View {
         }
         .padding(18)
         .frame(width: 480, height: 440)
-        .onChange(of: stores.map(\.note.id)) { _, noteIDs in
+        .onChange(of: stores.map(\.note.id)) { noteIDs in
             selectedNoteIDs = selectedNoteIDs.intersection(Set(noteIDs))
         }
     }

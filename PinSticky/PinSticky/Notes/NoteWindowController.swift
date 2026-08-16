@@ -18,7 +18,12 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
     private let updateThemeForSelection: (NoteStore, String) -> Void
     private let updateFontSizeForSelection: (NoteStore, Double) -> Void
     private let collapseSelection: (NoteStore) -> Void
+    private let stackNote: (UUID, UUID) -> Void
+    private let unstackNote: (UUID) -> Void
+    private let navigateStack: (UUID, Int) -> Void
     private let visibilityContext: () -> (frontmostBundleIdentifier: String?, visibleBundleIdentifiers: Set<String>)
+    private let resizeSelectedNotes: ((CGSize, CGPoint, UUID) -> Void)?
+    var isWindowVisible: Bool { window.isVisible }
     private let window: StickerNoteWindow
     private let placementManager = WindowPlacementManager()
     private var noteObserver: AnyCancellable?
@@ -44,7 +49,11 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
         updateThemeForSelection: @escaping (NoteStore, String) -> Void,
         updateFontSizeForSelection: @escaping (NoteStore, Double) -> Void,
         collapseSelection: @escaping (NoteStore) -> Void,
-        visibilityContext: @escaping () -> (frontmostBundleIdentifier: String?, visibleBundleIdentifiers: Set<String>)
+        stackNote: @escaping (UUID, UUID) -> Void,
+        unstackNote: @escaping (UUID) -> Void,
+        navigateStack: @escaping (UUID, Int) -> Void,
+        visibilityContext: @escaping () -> (frontmostBundleIdentifier: String?, visibleBundleIdentifiers: Set<String>),
+        resizeSelectedNotes: @escaping (CGSize, CGPoint, UUID) -> Void
     ) {
         self.store = store
         self.newNote = newNote
@@ -57,14 +66,37 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
         self.updateThemeForSelection = updateThemeForSelection
         self.updateFontSizeForSelection = updateFontSizeForSelection
         self.collapseSelection = collapseSelection
+        self.stackNote = stackNote
+        self.unstackNote = unstackNote
+        self.navigateStack = navigateStack
         self.visibilityContext = visibilityContext
+        self.resizeSelectedNotes = resizeSelectedNotes
         let initialFrame = Self.windowFrame(forNoteFrame: placementManager.clampedFrame(store.note.expandedFrame.cgRect))
         window = StickerNoteWindow(frame: initialFrame)
         presentationSnapshot = PresentationSnapshot(note: store.note)
         super.init()
         window.delegate = self
-        window.noteMouseDownHandler = { [weak self] in
-            self?.selectAndBringToFront()
+        window.noteMouseDownHandler = { [weak self] isCommandPressed in
+            guard let self else { return }
+            if isCommandPressed {
+                self.toggleSelected()
+            }
+            self.hasDraggedSinceMouseDown = false
+            self.wasCommandPressedOnMouseDown = isCommandPressed
+            self.selectAndBringToFront()
+            self.window.makeKeyAndOrderFront(nil)
+        }
+        window.noteMouseDraggedHandler = { [weak self] _ in
+            self?.hasDraggedSinceMouseDown = true
+        }
+        window.noteWindowResizedHandler = { [weak self] sizeDelta, originDelta in
+            guard let self else { return }
+            if self.selectionState.isSelected(self.store.note.id) {
+                self.resizeSelectedNotes?(sizeDelta, originDelta, self.store.note.id)
+            }
+        }
+        window.noteMouseUpHandler = {
+            // Selection is now strictly manual. No auto-deselect on mouse up.
         }
         window.collapsedClickHandler = { [weak self] in
             self?.toggleCollapsed()
@@ -75,6 +107,13 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
         }
         window.pinchHandler = { [weak self] magnification in
             self?.handlePinch(magnification: magnification)
+        }
+        window.hoverHandler = { [weak self] in
+            guard let self else { return }
+            self.window.orderFrontRegardless()
+        }
+        window.stackSwipeHandler = { [weak self] direction in
+            self?.handleStackSwipe(direction: direction)
         }
         window.noteShortcutHandler = { [weak self] shortcut in
             guard let self else { return false }
@@ -134,18 +173,49 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
         finishTransitionAfterAnimation()
     }
 
+    var windowNumber: Int {
+        window.windowNumber
+    }
+
+    func containsScreenPoint(_ screenPoint: CGPoint) -> Bool {
+        window.isVisible && window.frame.contains(screenPoint)
+    }
+
+    func handleHoverMagnify(_ event: NSEvent) {
+        _ = window.trackPinchMagnification(event)
+    }
+
     func collapseIfExpanded() {
         guard !store.note.isCollapsed else { return }
         toggleCollapsed()
     }
 
     private func handlePinch(magnification: CGFloat) {
-        guard window.isKeyWindow || window.isMainWindow else { return }
+        // Not gated on isKeyWindow/isMainWindow, same reasoning as the stack
+        // swipe: pinch-to-collapse/expand should work while just hovering.
+        //
+        // Also ignore pinch ticks while a collapse/expand transition is
+        // already running: the same physical pinch tick can reach this
+        // handler more than once (the window's own `magnify` override and
+        // the text editor's scroll view both observe magnify events, and
+        // one can bubble into the other). Without this guard, a duplicated
+        // tick could call `toggleCollapsed()` again mid-animation, flipping
+        // straight back to the state it just left - which canceled out
+        // visually and looked like pinch "did nothing".
+        guard !isApplyingTransition else { return }
         if magnification < 0, !store.note.isCollapsed {
             toggleCollapsed()
         } else if magnification > 0, store.note.isCollapsed {
             toggleCollapsed()
         }
+    }
+
+    private func handleStackSwipe(direction: Int) {
+        // Intentionally not gated on isKeyWindow/isMainWindow: trackpad
+        // swipes should page a stack just by hovering over it, the same way
+        // scrolling an inactive window works elsewhere on macOS.
+        guard store.stackIndex != nil else { return }
+        navigateStack(store.note.stackParentID ?? store.note.id, direction)
     }
 
     func captureCurrentFrame() {
@@ -201,13 +271,48 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
         )
     }
 
+    private var hasDraggedSinceMouseDown = false
+    private var wasCommandPressedOnMouseDown = false
+
+    /// Applies the same size *and* origin change a selected sibling just
+    /// underwent, instead of forcing this window to some absolute size
+    /// while keeping its own origin fixed - the latter ignores which edge
+    /// the sibling was actually resized from, so a resize starting at, say,
+    /// the left edge (grows the window while shifting its origin left)
+    /// would apply here as pure growth with the origin pinned, which grows
+    /// from the *right* edge instead: a mirror image of the real resize.
+    func resizeBy(sizeDelta: CGSize, originDelta: CGPoint) {
+        window.isProgrammaticallyMoving = true
+        let currentFrame = window.frame
+        let newFrame = CGRect(
+            x: currentFrame.origin.x + originDelta.x,
+            y: currentFrame.origin.y + originDelta.y,
+            width: currentFrame.width + sizeDelta.width,
+            height: currentFrame.height + sizeDelta.height
+        )
+        window.setFrame(newFrame, display: true)
+
+        // Update model immediately
+        let noteFrame = Self.noteFrame(forWindowFrame: newFrame)
+        updateStoredFrameWithoutRefreshingContent {
+            store.updateExpandedFrame(noteFrame)
+        }
+        
+        captureCurrentFrame()
+        noteFrameChanged()
+        window.isProgrammaticallyMoving = false
+    }
+
     func windowDidMove(_ notification: Notification) {
+        guard !window.isProgrammaticallyMoving else { return }
         guard !collapseIfNeededFromCurrentWindowFrame() else { return }
+
         captureCurrentFrame()
         noteFrameChanged()
     }
 
     func windowDidResize(_ notification: Notification) {
+        guard !window.isProgrammaticallyMoving else { return }
         guard !store.note.isCollapsed, !isApplyingTransition else { return }
         guard !collapseIfNeededFromCurrentWindowFrame() else { return }
         let noteFrame = Self.noteFrame(forWindowFrame: window.frame)
@@ -269,25 +374,36 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
 
         if store.note.isCollapsed {
             let dotOrigin = placementManager.clampedDotOrigin(store.note.collapsedOrigin.cgPoint)
-            window.applyCollapsedStyle()
+            let dotFrame = collapsedWindowFrame(forDotOrigin: dotOrigin)
             window.applyLevel(for: store.note.displayMode)
-            setFrame(collapsedWindowFrame(forDotOrigin: dotOrigin), animated: animated, isCollapsing: true)
-            window.contentView = ClearHostingView(allowsTransparentTopHitTesting: true, rootView: DotView(
-                store: store,
-                overlapState: overlapState,
-                expand: { [weak self] in
-                    self?.toggleCollapsed()
-                },
-                dragEnded: { [weak self] in
-                    self?.captureCurrentFrame()
-                    self?.noteFrameChanged()
-                }
-            ))
+            let applyDotContent: @MainActor @Sendable () -> Void = { [weak self] in
+                guard let self else { return }
+                self.window.applyCollapsedStyle()
+                self.window.contentView = ClearHostingView(allowsTransparentTopHitTesting: true, rootView: DotView(
+                    store: self.store,
+                    overlapState: self.overlapState,
+                    expand: { [weak self] in
+                        self?.toggleCollapsed()
+                    },
+                    dragEnded: { [weak self] in
+                        self?.captureCurrentFrame()
+                        self?.noteFrameChanged()
+                    }
+                ))
+            }
+            if animated {
+                animateCollapseIntoDot(dotFrame: dotFrame, completion: applyDotContent)
+            } else {
+                window.isProgrammaticallyMoving = true
+                window.setFrame(dotFrame, display: true)
+                window.isProgrammaticallyMoving = false
+                applyDotContent()
+            }
         } else {
             let frame = placementManager.clampedFrame(store.note.expandedFrame.cgRect)
             window.applyExpandedStyle()
             window.applyLevel(for: store.note.displayMode)
-            setFrame(Self.windowFrame(forNoteFrame: frame), animated: animated, isCollapsing: false)
+            setFrame(Self.windowFrame(forNoteFrame: frame), animated: animated)
             window.contentView = ClearHostingView(allowsTransparentTopHitTesting: false, rootView: NoteView(
                 store: store,
                 overlapState: overlapState,
@@ -312,6 +428,12 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
                 updateFontSizeForSelection(store, delta)
             } collapseSelection: { [collapseSelection, store] in
                 collapseSelection(store)
+            } stackNote: { [stackNote] targetID, refID in
+                stackNote(targetID, refID)
+            } unstackNote: { [unstackNote] noteID in
+                unstackNote(noteID)
+            } navigateStack: { [navigateStack] parentID, delta in
+                navigateStack(parentID, delta)
             })
         }
     }
@@ -320,52 +442,79 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
         let originalFrame = window.frame
         let offsets: [CGFloat] = [0, -4, 1, -1, 0]
 
+        window.isProgrammaticallyMoving = true
         for (index, offset) in offsets.enumerated() {
             DispatchQueue.main.asyncAfter(deadline: .now() + Double(index) * 0.04) { [weak self] in
                 guard let self else { return }
                 self.window.setFrame(originalFrame.offsetBy(dx: 0, dy: offset), display: true)
                 if index == offsets.count - 1 {
                     self.captureCurrentFrame()
+                    self.window.isProgrammaticallyMoving = false
                 }
             }
         }
     }
 
-    private func setFrame(_ frame: CGRect, animated: Bool, isCollapsing: Bool) {
-        guard animated else {
-            window.setFrame(frame, display: true)
-            return
-        }
-
-        if isCollapsing {
-            let loweredFrame = frame.offsetBy(dx: 0, dy: -7)
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.18
-                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-                window.animator().setFrame(loweredFrame, display: true)
-            } completionHandler: {
-                Task { @MainActor in
-                    NSAnimationContext.runAnimationGroup { context in
-                        context.duration = 0.12
-                        context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                        self.window.animator().setFrame(frame, display: true)
+    /// Collapse without animating the window frame. AppKit frame
+    /// interpolation can nudge a borderless panel a few pixels sideways
+    /// before it lands on the final dot frame, so the window jumps to the dot
+    /// while fully transparent and only the dot view itself animates in.
+    private func animateCollapseIntoDot(dotFrame: CGRect, completion: @escaping @MainActor @Sendable () -> Void) {
+        window.isProgrammaticallyMoving = true
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.07
+            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            window.animator().alphaValue = 0
+        } completionHandler: {
+            Task { @MainActor in
+                self.window.alphaValue = 0
+                self.window.setFrame(dotFrame, display: true)
+                completion()
+                self.window.displayIfNeeded()
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = 0.12
+                    context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                    self.window.animator().alphaValue = 1
+                } completionHandler: {
+                    Task { @MainActor in
+                        self.window.alphaValue = 1
+                        self.window.isProgrammaticallyMoving = false
                     }
                 }
             }
+        }
+    }
+
+    private func setFrame(_ frame: CGRect, animated: Bool, completion: (@MainActor @Sendable () -> Void)? = nil) {
+        guard animated else {
+            window.isProgrammaticallyMoving = true
+            window.setFrame(frame, display: true)
+            window.isProgrammaticallyMoving = false
+            completion?()
             return
         }
 
-        let overshoot = frame.insetBy(dx: -min(frame.width * 0.035, 10), dy: -min(frame.height * 0.035, 10))
+        // Overshoot the final size slightly, then settle back down. (An
+        // 8%/26pt version of this read as too large a pop for a full-size
+        // note - this splits the difference between that and the original,
+        // barely-visible 3.5%/10pt.)
+        let overshoot = frame.insetBy(dx: -min(frame.width * 0.05, 16), dy: -min(frame.height * 0.05, 16))
+        window.isProgrammaticallyMoving = true
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.14
+            context.duration = 0.15
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             window.animator().setFrame(overshoot, display: true)
         } completionHandler: {
             Task { @MainActor in
                 NSAnimationContext.runAnimationGroup { context in
-                    context.duration = 0.16
+                    context.duration = 0.18
                     context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
                     self.window.animator().setFrame(frame, display: true)
+                } completionHandler: {
+                    Task { @MainActor in
+                        self.window.isProgrammaticallyMoving = false
+                        completion?()
+                    }
                 }
             }
         }
@@ -455,7 +604,7 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
         }
     }
 
-    private func hideWindow(animated: Bool) {
+    func hideWindow(animated: Bool) {
         guard isVisible || window.isVisible else { return }
         isVisible = false
 
@@ -482,6 +631,7 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
         let startFrame = scaledFrame(from: finalFrame, scale: 0.96).offsetBy(dx: 0, dy: -4)
         let overshootFrame = scaledFrame(from: finalFrame, scale: 1.015).offsetBy(dx: 0, dy: 2)
 
+        window.isProgrammaticallyMoving = true
         window.alphaValue = 0
         window.setFrame(startFrame, display: true)
         orderWindowFront()
@@ -497,30 +647,34 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
                     context.duration = 0.14
                     context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
                     self.window.animator().setFrame(finalFrame, display: true)
+                } completionHandler: {
+                    Task { @MainActor in
+                        self.window.isProgrammaticallyMoving = false
+                    }
                 }
             }
         }
     }
 
+    /// Delete with a small pop-and-tuck motion. The window is fully
+    /// transparent before it is ordered out, so its cosmetic state can be
+    /// reset without flashing back on screen.
     private func animateWindowDisappearance(completion: @escaping @MainActor @Sendable () -> Void) {
         guard window.isVisible else {
             completion()
             return
         }
 
-        let finalFrame = window.frame
-        let endFrame = scaledFrame(from: finalFrame, scale: 0.965).offsetBy(dx: 0, dy: -3)
-
+        window.isProgrammaticallyMoving = true
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.14
-            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
             window.animator().alphaValue = 0
-            window.animator().setFrame(endFrame, display: true)
         } completionHandler: {
             Task { @MainActor in
-                self.window.setFrame(finalFrame, display: false)
-                self.window.alphaValue = 1
                 completion()
+                self.window.alphaValue = 1
+                self.window.isProgrammaticallyMoving = false
             }
         }
     }
@@ -612,6 +766,9 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
     }
 
     private func applyPresentationChangeIfNeeded(_ note: StickerNote) {
+        guard !isApplyingTransition else { return }
+        guard !window.isProgrammaticallyMoving else { return }
+
         let nextSnapshot = PresentationSnapshot(note: note)
         guard nextSnapshot != presentationSnapshot else { return }
 
@@ -628,6 +785,17 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
         }
 
         presentationSnapshot = nextSnapshot
+
+        // A hidden stack sibling's note keeps its `expandedFrame` in sync via
+        // `syncStackFrames` while the front note is dragged/resized, purely
+        // as stored state. Actually moving its (ordered-out) window here too
+        // can make it flash back into view mid-drag, trailing behind the
+        // front note. Skip the live window update while hidden - `show()`
+        // already applies the current `store.note` frame via `applyContent`
+        // whenever this note becomes visible again.
+        guard window.isVisible else { return }
+
+        window.isProgrammaticallyMoving = true
         if note.isCollapsed {
             let dotOrigin = placementManager.clampedDotOrigin(note.collapsedOrigin.cgPoint)
             window.setFrame(collapsedWindowFrame(forDotOrigin: dotOrigin), display: true)
@@ -635,6 +803,7 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
             let frame = placementManager.clampedFrame(note.expandedFrame.cgRect)
             window.setFrame(Self.windowFrame(forNoteFrame: frame), display: true)
         }
+        window.isProgrammaticallyMoving = false
     }
 
     private func collapsedWindowFrame(forDotOrigin dotOrigin: CGPoint) -> CGRect {
@@ -667,6 +836,7 @@ private struct PresentationSnapshot: Equatable {
 
 private final class ClearHostingView<Content: View>: NSHostingView<Content> {
     private let allowsTransparentTopHitTesting: Bool
+    private var hoverTrackingArea: NSTrackingArea?
 
     required init(rootView: Content) {
         self.allowsTransparentTopHitTesting = true
@@ -695,6 +865,7 @@ private final class ClearHostingView<Content: View>: NSHostingView<Content> {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         configureClearLayer()
+        updateHoverTrackingArea()
     }
 
     override func updateLayer() {
@@ -706,8 +877,39 @@ private final class ClearHostingView<Content: View>: NSHostingView<Content> {
         return super.hitTest(point)
     }
 
+    override func magnify(with event: NSEvent) {
+        let handled = (window as? StickerNoteWindow)?.trackPinchMagnification(event) ?? false
+        if !handled {
+            super.magnify(with: event)
+        }
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        updateHoverTrackingArea()
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        (window as? StickerNoteWindow)?.prepareForHoverGesture()
+        super.mouseEntered(with: event)
+    }
+
     override func resetCursorRects() {
         super.resetCursorRects()
+    }
+
+    private func updateHoverTrackingArea() {
+        if let hoverTrackingArea {
+            removeTrackingArea(hoverTrackingArea)
+        }
+        let trackingArea = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        hoverTrackingArea = trackingArea
+        addTrackingArea(trackingArea)
     }
 
     private func configureClearLayer() {

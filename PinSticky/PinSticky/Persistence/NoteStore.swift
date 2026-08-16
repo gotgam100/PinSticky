@@ -14,6 +14,8 @@ final class NoteStore: ObservableObject {
             UserDefaults.standard.set(language.rawValue, forKey: Self.languageDefaultsKey)
         }
     }
+    @Published var stackIndex: Int?
+    @Published var stackCount: Int?
 
     private static let languageDefaultsKey = "appLanguage"
     private static let hasLaunchedDefaultsKey = "hasLaunched"
@@ -141,13 +143,14 @@ final class NoteStore: ObservableObject {
         inheriting source: StickerNote?,
         themeID selectedThemeID: String? = nil,
         centeredAt centerPoint: CGPoint? = nil,
-        near sourceFrame: CGRect? = nil
+        near sourceFrame: CGRect? = nil,
+        avoiding existingFrames: [CGRect] = []
     ) -> NoteStore {
         let size = sourceFrame?.size ?? CGSize(width: 320, height: 260)
         let visible = bestVisibleFrame(for: centerPoint ?? sourceFrame?.center)
         let origin: CGPoint
         if let sourceFrame {
-            origin = siblingOrigin(for: sourceFrame, size: size, visible: visible)
+            origin = siblingOrigin(for: sourceFrame, size: size, visible: visible, avoiding: existingFrames)
         } else if let centerPoint {
             origin = clampedOrigin(
                 CGPoint(x: centerPoint.x - size.width / 2, y: centerPoint.y - size.height / 2),
@@ -194,20 +197,35 @@ final class NoteStore: ObservableObject {
         return NoteStore(note: note, fileURL: fileURL(for: note.id))
     }
 
-    private static func siblingOrigin(for sourceFrame: CGRect, size: CGSize, visible: CGRect) -> CGPoint {
+    private static func siblingOrigin(
+        for sourceFrame: CGRect,
+        size: CGSize,
+        visible: CGRect,
+        avoiding existingFrames: [CGRect]
+    ) -> CGPoint {
         let gap: CGFloat = 24
-        let candidates = [
-            CGPoint(x: sourceFrame.maxX + gap, y: sourceFrame.minY),
-            CGPoint(x: sourceFrame.minX - size.width - gap, y: sourceFrame.minY),
-            CGPoint(x: sourceFrame.minX + gap, y: sourceFrame.minY - size.height - gap),
-            CGPoint(x: sourceFrame.minX + gap, y: sourceFrame.maxY + gap),
-            CGPoint(x: sourceFrame.minX + 36, y: sourceFrame.minY - 36)
-        ]
 
-        if let fittingOrigin = candidates.first(where: { origin in
-            visible.contains(CGRect(origin: origin, size: size))
-        }) {
-            return fittingOrigin
+        func fits(_ origin: CGPoint) -> Bool {
+            let candidateFrame = CGRect(origin: origin, size: size)
+            guard visible.contains(candidateFrame) else { return false }
+            return !existingFrames.contains { $0.intersects(candidateFrame) }
+        }
+
+        // Try the usual slots first (right, left, above, below, diagonal), then
+        // push further out along the same directions if those are occupied by
+        // another note (e.g. two notes already sitting side by side).
+        for step in 1...6 {
+            let multiplier = CGFloat(step)
+            let candidates = [
+                CGPoint(x: sourceFrame.maxX + gap * multiplier, y: sourceFrame.minY),
+                CGPoint(x: sourceFrame.minX - (size.width + gap) * multiplier, y: sourceFrame.minY),
+                CGPoint(x: sourceFrame.minX + gap, y: sourceFrame.minY - (size.height + gap) * multiplier),
+                CGPoint(x: sourceFrame.minX + gap, y: sourceFrame.maxY + gap * multiplier),
+                CGPoint(x: sourceFrame.minX + 36 * multiplier, y: sourceFrame.minY - 36 * multiplier)
+            ]
+            if let fittingOrigin = candidates.first(where: fits) {
+                return fittingOrigin
+            }
         }
 
         return clampedOrigin(

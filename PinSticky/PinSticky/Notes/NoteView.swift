@@ -14,6 +14,9 @@ struct NoteView: View {
     let updateThemeForSelection: (String) -> Void
     let updateFontSizeForSelection: (Double) -> Void
     let collapseSelection: () -> Void
+    let stackNote: (UUID, UUID) -> Void
+    let unstackNote: (UUID) -> Void
+    let navigateStack: (UUID, Int) -> Void
 
     static let minimumNoteWidth: CGFloat = 270
     static let minimumNoteHeight: CGFloat = 170
@@ -44,7 +47,10 @@ struct NoteView: View {
             ZStack {
                 NoteBackground(theme: theme, opacity: noteOpacity, usesLiquidGlass: usesLiquidGlass)
                     .overlay {
-                        if overlapState.hasOverlap {
+                        if selectionState.isSelected(store.note.id) {
+                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                .strokeBorder(Color(nsColor: NSColor(hex: theme.foreground)), lineWidth: 2.5, antialiased: true)
+                        } else if overlapState.hasOverlap {
                             RoundedRectangle(cornerRadius: 18, style: .continuous)
                                 .strokeBorder(Color.white.opacity(0.72), lineWidth: 0.75, antialiased: true)
                         }
@@ -55,11 +61,30 @@ struct NoteView: View {
 
                     NoteRichTextEditor(store: store, theme: theme)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .padding(.horizontal, 22)
+                        .padding(.horizontal, 4)
                         .padding(.top, 8)
                         .padding(.bottom, 20)
                 }
                 .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+
+                if let index = store.stackIndex, let count = store.stackCount {
+                    VStack {
+                        Spacer()
+                        HStack {
+                            Spacer()
+                            NoteStackPager(
+                                index: index,
+                                count: count,
+                                theme: theme,
+                                onPrevious: { navigateStack(store.note.stackParentID ?? store.note.id, -1) },
+                                onNext: { navigateStack(store.note.stackParentID ?? store.note.id, 1) },
+                                onUnstack: { unstackNote(store.note.id) }
+                            )
+                        }
+                    }
+                    .padding(.trailing, 24)
+                    .padding(.bottom, 6)
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -83,7 +108,9 @@ struct NoteView: View {
                     unpinNotes: unpinNotes,
                     updateThemeForSelection: updateThemeForSelection,
                     updateFontSizeForSelection: updateFontSizeForSelection,
-                    collapseSelection: collapseSelection
+                    collapseSelection: collapseSelection,
+                    stackNote: stackNote,
+                    unstackNote: unstackNote
                 )
             } else {
                 HeaderOverflowDots(color: theme.foregroundColor)
@@ -125,6 +152,8 @@ private struct NoteHoverControls: View {
     let updateThemeForSelection: (String) -> Void
     let updateFontSizeForSelection: (Double) -> Void
     let collapseSelection: () -> Void
+    let stackNote: (UUID, UUID) -> Void
+    let unstackNote: (UUID) -> Void
     @State private var characterAttributeState = CharacterAttributeState()
 
     var body: some View {
@@ -144,7 +173,15 @@ private struct NoteHoverControls: View {
                 Image(systemName: "xmark")
             }
 
-            appPinningMenu
+            PinAttachmentButton(
+                store: store,
+                theme: theme,
+                attachmentDragSucceeded: attachmentDragSucceeded,
+                attachNotes: attachNotes,
+                unpinNotes: unpinNotes,
+                stackNote: stackNote
+            )
+                .frame(width: 15, height: 15)
 
             themeMenu
 
@@ -255,7 +292,8 @@ private struct NoteHoverControls: View {
             theme: theme,
             attachmentDragSucceeded: attachmentDragSucceeded,
             attachNotes: attachNotes,
-            unpinNotes: unpinNotes
+            unpinNotes: unpinNotes,
+            stackNote: stackNote
         )
             .frame(width: 15, height: 15)
     }
@@ -279,6 +317,7 @@ private struct PinAttachmentButton: NSViewRepresentable {
     let attachmentDragSucceeded: () -> Void
     let attachNotes: (RunningApplicationInfo?) -> Void
     let unpinNotes: () -> Void
+    let stackNote: (UUID, UUID) -> Void
 
     func makeNSView(context: Context) -> DraggablePinButton {
         let button = DraggablePinButton(frame: NSRect(x: 0, y: 0, width: 15, height: 15))
@@ -298,7 +337,21 @@ private struct PinAttachmentButton: NSViewRepresentable {
             guard let store, sourceView.window != nil else { return }
             makeMenu(for: store).popUp(positioning: nil, at: NSPoint(x: -8, y: sourceView.bounds.maxY + 6), in: sourceView)
         }
-        button.onDragEnd = {
+        button.onDragEnd = { [weak store] in
+            guard let store else { return }
+            let mouseLoc = NSEvent.mouseLocation
+            
+            for window in NSApp.windows where window.isVisible {
+                if let stickerWindow = window as? StickerNoteWindow,
+                   stickerWindow != button.window,
+                   stickerWindow.frame.contains(mouseLoc) {
+                    if let controller = stickerWindow.delegate as? NoteWindowController {
+                        stackNote(store.note.id, controller.store.note.id)
+                        return
+                    }
+                }
+            }
+
             guard let application = ApplicationDropTargetResolver.applicationUnderMouse() else { return }
             attachNotes(application)
             attachmentDragSucceeded()
@@ -641,6 +694,7 @@ struct DotView: View {
     @ObservedObject var overlapState: NoteOverlapState
     let expand: () -> Void
     let dragEnded: () -> Void
+    @State private var dotScale: CGFloat = 0.86
 
     private var theme: NoteTheme {
         BuiltInThemes.theme(id: store.note.themeID)
@@ -664,10 +718,17 @@ struct DotView: View {
                     }
                 }
                 .frame(width: NoteView.collapsedDotVisualSize, height: NoteView.collapsedDotVisualSize)
+                .scaleEffect(dotScale)
             DotInteractionView(expand: expand, dragEnded: dragEnded)
                 .frame(width: NoteView.collapsedDotHitSize, height: NoteView.collapsedDotHitSize)
         }
         .frame(width: NoteView.collapsedDotHitSize, height: NoteView.collapsedDotHitSize)
+        .onAppear {
+            dotScale = 0.86
+            withAnimation(.interpolatingSpring(stiffness: 260, damping: 18)) {
+                dotScale = 1
+            }
+        }
     }
 }
 
@@ -751,6 +812,14 @@ final class NoteSelectionState: ObservableObject {
         selectedNoteIDs.remove(noteID)
     }
 
+    func clearAllAndSelect(_ noteID: UUID) {
+        selectedNoteIDs = [noteID]
+    }
+
+    func clearAll() {
+        selectedNoteIDs.removeAll()
+    }
+
     func prune(activeNoteIDs: Set<UUID>) {
         selectedNoteIDs = selectedNoteIDs.intersection(activeNoteIDs)
     }
@@ -821,5 +890,55 @@ private final class DotInteractionNSView: NSView {
         } else {
             expand()
         }
+    }
+}
+
+private struct NoteStackPager: View {
+    let index: Int
+    let count: Int
+    let theme: NoteTheme
+    let onPrevious: () -> Void
+    let onNext: () -> Void
+    let onUnstack: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Button(action: onPrevious) {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 10, weight: .bold))
+            }
+            .buttonStyle(.plain)
+            .frame(width: 20, height: 20)
+            
+            Text("\(index + 1) / \(count)")
+                .font(.system(size: 11, weight: .medium))
+            
+            Button(action: onNext) {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .bold))
+            }
+            .buttonStyle(.plain)
+            .frame(width: 20, height: 20)
+            
+            Divider()
+                .frame(height: 12)
+                .background(Color(nsColor: NSColor(hex: theme.foreground)).opacity(0.3))
+            
+            Button(action: onUnstack) {
+                Image(systemName: "rectangle.stack.badge.minus")
+                    .font(.system(size: 10, weight: .bold))
+            }
+            .buttonStyle(.plain)
+            .frame(width: 20, height: 20)
+            .help("스택에서 분리하기")
+        }
+        .foregroundColor(Color(nsColor: NSColor(hex: theme.foreground)).opacity(0.8))
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(
+            Capsule()
+                .fill(Color(nsColor: NSColor(hex: theme.background)).opacity(0.7))
+                .shadow(color: .black.opacity(0.1), radius: 2, y: 1)
+        )
     }
 }

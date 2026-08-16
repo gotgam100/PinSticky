@@ -41,10 +41,10 @@ struct NoteRichTextEditor: NSViewRepresentable {
         textView.textContainer?.lineFragmentPadding = 0
         textView.layoutManager?.allowsNonContiguousLayout = false
         textView.delegate = context.coordinator
-        textView.autoresizingMask = [.width, .height]
+        textView.autoresizingMask = [.width]
         textView.minSize = NSSize(width: 0, height: 0)
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-        textView.isVerticallyResizable = false
+        textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
 
         container.textView = textView
@@ -136,7 +136,7 @@ struct NoteRichTextEditor: NSViewRepresentable {
             let content = textView.string
             store.updateContent(content)
             lastAppliedContent = content
-            (textView.superview as? PinStickyTextEditorContainer)?.configureTextLayout()
+            (textView.enclosingScrollView?.superview as? PinStickyTextEditorContainer)?.configureTextLayout()
             publishCharacterAttributeState()
         }
 
@@ -649,12 +649,64 @@ final class ContextMenuTextView: NSTextView {
     }
 }
 
+final class ThinScroller: NSScroller {
+    override class var isCompatibleWithOverlayScrollers: Bool {
+        return true
+    }
+
+    override class func scrollerWidth(for controlSize: NSControl.ControlSize, scrollerStyle: NSScroller.Style) -> CGFloat {
+        return 6.0
+    }
+
+    override func drawKnobSlot(in slotRect: NSRect, highlight flag: Bool) {}
+
+    override func drawKnob() {
+        let knobRect = rect(for: .knob)
+        guard !knobRect.isEmpty else { return }
+
+        let thinWidth: CGFloat = 5.0
+        let x = bounds.width - thinWidth - 0.5
+        let rect = NSRect(
+            x: max(0, x),
+            y: knobRect.minY + 2,
+            width: thinWidth,
+            height: max(knobRect.height - 4, 14)
+        )
+
+        let path = NSBezierPath(roundedRect: rect, xRadius: thinWidth / 2, yRadius: thinWidth / 2)
+        NSColor.textColor.withAlphaComponent(0.28).setFill()
+        path.fill()
+    }
+}
+
+/// Forwards scroll events to the enclosing note window's stack-swipe
+/// tracking before handling them normally. The plain `scrollWheel`
+/// dispatch to `NSScrollView` does not reliably bubble unhandled/passthrough
+/// gestures back up to `StickerNoteWindow.sendEvent`, so the window-level
+/// swipe detection alone missed swipes made anywhere over the text editor -
+/// which covers most of a note's area.
+final class NoteEditorScrollView: NSScrollView {
+    override func scrollWheel(with event: NSEvent) {
+        (window as? StickerNoteWindow)?.trackStackSwipe(event)
+        super.scrollWheel(with: event)
+    }
+
+    override func magnify(with event: NSEvent) {
+        let handled = (window as? StickerNoteWindow)?.trackPinchMagnification(event) ?? false
+        if !handled {
+            super.magnify(with: event)
+        }
+    }
+}
+
 final class PinStickyTextEditorContainer: NSView {
-    weak var textView: NSTextView? {
+    let scrollView = NoteEditorScrollView()
+
+    weak var textView: ContextMenuTextView? {
         didSet {
             oldValue?.removeFromSuperview()
             if let textView {
-                addSubview(textView)
+                scrollView.documentView = textView
                 configureTextLayout()
             }
         }
@@ -662,18 +714,33 @@ final class PinStickyTextEditorContainer: NSView {
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        wantsLayer = true
-        layer?.masksToBounds = true
+        setupScrollView()
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
+        setupScrollView()
+    }
+
+    private func setupScrollView() {
         wantsLayer = true
         layer?.masksToBounds = true
+
+        scrollView.drawsBackground = false
+        scrollView.contentView.drawsBackground = false
+        scrollView.borderType = .noBorder
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.autohidesScrollers = true
+        scrollView.scrollerStyle = .overlay
+        scrollView.verticalScroller = ThinScroller()
+        scrollView.autoresizingMask = [.width, .height]
+        addSubview(scrollView)
     }
 
     override func layout() {
         super.layout()
+        scrollView.frame = bounds
         configureTextLayout()
     }
 
@@ -681,21 +748,23 @@ final class PinStickyTextEditorContainer: NSView {
         guard let textView,
               let textContainer = textView.textContainer else { return }
 
-        let size = NSSize(width: max(bounds.width, 1), height: max(bounds.height, 1))
+        let width = max(bounds.width, 1)
 
-        textView.textContainerInset = NSSize(width: 0, height: 0)
+        textView.textContainerInset = NSSize(width: 16, height: 0)
         textContainer.lineFragmentPadding = 0
-        textContainer.widthTracksTextView = false
-        textContainer.heightTracksTextView = false
-        textContainer.containerSize = NSSize(width: size.width, height: CGFloat.greatestFiniteMagnitude)
-        textView.frame = NSRect(origin: .zero, size: size)
+        textContainer.widthTracksTextView = true
+        textContainer.containerSize = NSSize(width: width - 32, height: CGFloat.greatestFiniteMagnitude)
 
-        textView.minSize = size
-        textView.maxSize = size
-        textView.isVerticallyResizable = false
+        textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
-        textView.needsDisplay = true
-        needsDisplay = true
+        textView.autoresizingMask = [.width]
+
+        if textView.frame.width != width {
+            textView.frame.size.width = width
+        }
+
+        textView.minSize = NSSize(width: width, height: 0)
+        textView.maxSize = NSSize(width: width, height: CGFloat.greatestFiniteMagnitude)
     }
 }
 

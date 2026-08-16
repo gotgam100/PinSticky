@@ -17,6 +17,8 @@ struct StickerNote: Codable, Equatable, Identifiable {
     var expandedFrame: CodableRect
     var collapsedOrigin: CodablePoint
     var updatedAt: Date
+    var stackParentID: UUID?
+    var stackedNoteIDs: [UUID] = []
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -33,6 +35,8 @@ struct StickerNote: Codable, Equatable, Identifiable {
         case expandedFrame
         case collapsedOrigin
         case updatedAt
+        case stackParentID
+        case stackedNoteIDs
     }
 
     init(
@@ -49,7 +53,9 @@ struct StickerNote: Codable, Equatable, Identifiable {
         attachedBundleIdentifier: String?,
         expandedFrame: CodableRect,
         collapsedOrigin: CodablePoint,
-        updatedAt: Date
+        updatedAt: Date,
+        stackParentID: UUID? = nil,
+        stackedNoteIDs: [UUID] = []
     ) {
         self.id = id
         self.content = content
@@ -65,6 +71,8 @@ struct StickerNote: Codable, Equatable, Identifiable {
         self.expandedFrame = expandedFrame
         self.collapsedOrigin = collapsedOrigin
         self.updatedAt = updatedAt
+        self.stackParentID = stackParentID
+        self.stackedNoteIDs = stackedNoteIDs
     }
 
     init(from decoder: Decoder) throws {
@@ -83,6 +91,8 @@ struct StickerNote: Codable, Equatable, Identifiable {
         expandedFrame = try container.decode(CodableRect.self, forKey: .expandedFrame)
         collapsedOrigin = try container.decode(CodablePoint.self, forKey: .collapsedOrigin)
         updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+        stackParentID = try container.decodeIfPresent(UUID.self, forKey: .stackParentID)
+        stackedNoteIDs = try container.decodeIfPresent([UUID].self, forKey: .stackedNoteIDs) ?? []
     }
 
     static let fallback = StickerNote(

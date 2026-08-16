@@ -29,6 +29,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var deletedNotesWindow: NSWindow?
     private var localKeyMonitor: Any?
     private var globalKeyMonitor: Any?
+    private var localMagnifyMonitor: Any?
+    private var globalMagnifyMonitor: Any?
     private var globalNewNoteHotKeyRef: EventHotKeyRef?
     private var globalNewNoteHotKeyHandler: EventHandlerRef?
     private var isGlobalNewNoteHotKeyRegistered = false
@@ -43,9 +45,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NSApp.mainMenu = makeMainMenu()
         seedCurrentExternalFrontmostApplication()
         stores = NoteStore.loadAll()
+        for store in stores {
+            if store.note.stackParentID == nil && !store.note.stackedNoteIDs.isEmpty {
+                updateStackStates(for: store.note.id)
+            }
+        }
         observeActiveApplications()
         startWindowVisibilityPolling()
         installKeyMonitor()
+        installMagnifyHoverMonitor()
         registerGlobalNewNoteHotKey()
         configureStatusItem()
         showAllNotes()
@@ -57,6 +65,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         if let globalKeyMonitor {
             NSEvent.removeMonitor(globalKeyMonitor)
+        }
+        if let localMagnifyMonitor {
+            NSEvent.removeMonitor(localMagnifyMonitor)
+        }
+        if let globalMagnifyMonitor {
+            NSEvent.removeMonitor(globalMagnifyMonitor)
         }
         unregisterGlobalNewNoteHotKey()
         windowVisibilityTimer?.invalidate()
@@ -79,7 +93,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
 
         isShowingAllNotesUntilAppSwitch = true
-        NSApp.activate()
+        if #available(macOS 14.0, *) {
+            NSApp.activate()
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+        }
         temporarilyRevealAttachmentHiddenNotes()
         DispatchQueue.main.async { [weak self] in
             self?.temporarilyRevealAttachmentHiddenNotes()
@@ -102,6 +120,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         createNote(inheriting: nil, themeID: sender.representedObject as? String)
     }
 
+    private var lastCreateNoteTime: Date = .distantPast
+
     private func createNote(
         inheriting note: StickerNote?,
         themeID: String? = nil,
@@ -109,12 +129,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         near sourceFrame: CGRect? = nil,
         forceVisible: Bool? = nil
     ) {
+        let now = Date()
+        guard now.timeIntervalSince(lastCreateNoteTime) > 0.1 else { return }
+        lastCreateNoteTime = now
         let noteStore = NoteStore.makeNew(
             offset: stores.count,
             inheriting: note,
             themeID: themeID,
             centeredAt: centerPoint,
-            near: sourceFrame
+            near: sourceFrame,
+            avoiding: currentVisibleNoteFrames()
         )
         stores.append(noteStore)
         show(
@@ -122,7 +146,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             forceVisible: forceVisible ?? (noteStore.note.displayMode == .always || isShowingAllNotesUntilAppSwitch)
         )
         updateNoteListWindowContent()
-        NSApp.activate()
+        if #available(macOS 14.0, *) {
+            NSApp.activate()
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+        }
     }
 
     @objc private func workspaceApplicationsChanged(_ notification: Notification) {
@@ -153,7 +181,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     @objc private func cycleTheme() {
-        activeController?.store.cycleTheme()
+        guard let activeStore = activeController?.store else { return }
+        activeStore.cycleTheme()
+        let newThemeID = activeStore.note.themeID
+        headerSelectedStores(source: activeStore).forEach { $0.updateTheme(newThemeID) }
     }
 
     @objc private func closeNote() {
@@ -189,7 +220,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     @objc private func showAbout() {
-        NSApp.activate()
+        if #available(macOS 14.0, *) {
+            NSApp.activate()
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+        }
         let appIcon = NSApp.applicationIconImage ?? NSImage()
         NSApp.orderFrontStandardAboutPanel(options: [
             .applicationName: "PinSticky",
@@ -200,7 +235,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     @objc private func showSettings() {
-        NSApp.activate()
+        if #available(macOS 14.0, *) {
+            NSApp.activate()
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+        }
 
         if let settingsWindow {
             settingsWindow.makeKeyAndOrderFront(nil)
@@ -230,7 +269,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     @objc private func showShortcutSettings() {
-        NSApp.activate()
+        if #available(macOS 14.0, *) {
+            NSApp.activate()
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+        }
 
         if let shortcutSettingsWindow {
             shortcutSettingsWindow.makeKeyAndOrderFront(nil)
@@ -255,7 +298,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     @objc private func showNoteList() {
-        NSApp.activate()
+        if #available(macOS 14.0, *) {
+            NSApp.activate()
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+        }
 
         if let noteListWindow {
             noteListWindow.makeKeyAndOrderFront(nil)
@@ -278,7 +325,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     @objc private func showDeletedNotesRestore() {
-        NSApp.activate()
+        if #available(macOS 14.0, *) {
+            NSApp.activate()
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+        }
 
         if let deletedNotesWindow {
             deletedNotesWindow.makeKeyAndOrderFront(nil)
@@ -350,7 +401,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func listedStores() -> [NoteStore] {
         stores.filter { store in
-            noteWindowControllers[store.note.id]?.isUserHidden != true
+            store.note.stackParentID == nil && noteWindowControllers[store.note.id]?.isUserHidden != true
         }
     }
 
@@ -404,6 +455,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private var hasOpenNoteWindow: Bool {
         noteWindowControllers.values.contains { $0.visibleFrame != nil }
+    }
+
+    private func currentVisibleNoteFrames() -> [CGRect] {
+        noteWindowControllers.values.compactMap(\.visibleFrame)
     }
 
     private func refreshNoteVisibilityForVisibleApps() {
@@ -468,6 +523,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 self?.activate(noteID: noteID)
             },
             noteFrameChanged: { [weak self] in
+                self?.syncStackFrames(from: store.note.id)
                 self?.refreshOverlapOutlines()
             },
             selectionState: noteSelectionState,
@@ -486,8 +542,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             collapseSelection: { [weak self] sourceStore in
                 self?.collapseHeaderSelectedNotes(source: sourceStore)
             },
+            stackNote: { [weak self] targetID, refID in
+                self?.stackNote(targetID, onto: refID)
+            },
+            unstackNote: { [weak self] noteID in
+                self?.unstackNote(noteID)
+            },
+            navigateStack: { [weak self] parentID, delta in
+                self?.navigateStack(from: parentID, delta: delta)
+            },
             visibilityContext: { [weak self] in
                 self?.currentVisibilityContext() ?? (nil, [])
+            },
+            resizeSelectedNotes: { [weak self] sizeDelta, originDelta, sourceID in
+                self?.resizeHeaderSelectedNotes(sizeDelta: sizeDelta, originDelta: originDelta, excluding: sourceID)
             }
         )
         noteWindowControllers[store.note.id] = controller
@@ -523,11 +591,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         noteWindowControllers.values.forEach { $0.restoreDefaultWindowLevel() }
     }
 
+    /// Notes that should receive a batch action (theme, font size, pin
+    /// state, collapse, ...) triggered from `source`'s own header.
+    ///
+    /// This must only fan out to the other checked notes when `source`
+    /// itself is checked - previously it fanned out to whatever was checked
+    /// *anywhere in the app* regardless of whether `source` was part of
+    /// that selection, so editing an unchecked note could still drag along
+    /// unrelated checked notes (and vice versa), and two notes merely
+    /// sharing a stack had no bearing on this at all - only the checkbox
+    /// selection should.
     private func headerSelectedStores(source: NoteStore) -> [NoteStore] {
+        guard noteSelectionState.isSelected(source.note.id) else { return [source] }
         let activeStoreByID = Dictionary(uniqueKeysWithValues: stores.map { ($0.note.id, $0) })
         let selectedStores = noteSelectionState.selectedNoteIDs.compactMap { activeStoreByID[$0] }
-        guard !selectedStores.isEmpty else { return [source] }
-        return selectedStores
+        return selectedStores.isEmpty ? [source] : selectedStores
+    }
+
+    private func resizeHeaderSelectedNotes(sizeDelta: CGSize, originDelta: CGPoint, excluding sourceID: UUID) {
+        let selectedIDs = noteSelectionState.selectedNoteIDs
+        guard selectedIDs.contains(sourceID) else { return }
+
+        for id in selectedIDs where id != sourceID {
+            noteWindowControllers[id]?.resizeBy(sizeDelta: sizeDelta, originDelta: originDelta)
+        }
     }
 
     private func attachHeaderSelectedNotes(source: NoteStore, to application: RunningApplicationInfo?) {
@@ -583,7 +670,170 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
+    private func stackNote(_ targetID: UUID, onto referenceID: UUID) {
+        guard targetID != referenceID else { return }
+        
+        let selectedIDs = noteSelectionState.selectedNoteIDs
+        let primaryTargets = selectedIDs.contains(targetID) ? Array(selectedIDs) : [targetID]
+        let validTargets = primaryTargets.filter { $0 != referenceID }
+        
+        guard let refStore = stores.first(where: { $0.note.id == referenceID }) else { return }
+        let actualRefID = refStore.note.stackParentID ?? referenceID
+        guard let actualRefStore = stores.first(where: { $0.note.id == actualRefID }) else { return }
+        
+        for target in validTargets {
+            guard target != actualRefID else { continue }
+            guard let targetStore = stores.first(where: { $0.note.id == target }) else { continue }
+            
+            if targetStore.note.stackParentID != nil {
+                unstackNote(target)
+            }
+            
+            let childrenToMove = targetStore.note.stackedNoteIDs
+            targetStore.note.stackedNoteIDs.removeAll()
+            
+            let allTargets = [target] + childrenToMove
+            for id in allTargets {
+                guard id != actualRefID else { continue }
+                if let store = stores.first(where: { $0.note.id == id }) {
+                    store.note.stackParentID = actualRefID
+                    if !actualRefStore.note.stackedNoteIDs.contains(id) {
+                        actualRefStore.note.stackedNoteIDs.append(id)
+                    }
+                    store.note.expandedFrame = actualRefStore.note.expandedFrame
+                    store.note.displayMode = actualRefStore.note.displayMode
+                    noteWindowControllers[id]?.hide()
+                    store.flush()
+                }
+            }
+        }
+        
+        noteWindowControllers[actualRefID]?.show(forceVisible: true, resetManualHidden: true, animateAppearance: false)
+        actualRefStore.flush()
+        updateStackStates(for: actualRefID)
+    }
+
+    private func unstackNote(_ noteID: UUID) {
+        guard let targetStore = stores.first(where: { $0.note.id == noteID }) else { return }
+        guard targetStore.note.stackParentID != nil || !targetStore.note.stackedNoteIDs.isEmpty else { return }
+
+        detachNoteFromStack(noteID)
+
+        targetStore.note.expandedFrame = CodableRect(
+            x: targetStore.note.expandedFrame.x + 20,
+            y: targetStore.note.expandedFrame.y - 20,
+            width: targetStore.note.expandedFrame.width,
+            height: targetStore.note.expandedFrame.height
+        )
+        noteWindowControllers[noteID]?.show(forceVisible: true)
+        targetStore.stackIndex = nil
+        targetStore.stackCount = nil
+        targetStore.flush()
+    }
+
+    /// Removes `noteID` from whatever stack it participates in (as a child
+    /// or as the parent/reference note) and repairs the remaining stack so
+    /// its other pages stay reachable. Does not touch `noteID`'s own window
+    /// or `stores` entry — callers decide what happens to the note itself
+    /// (kept as a standalone note in `unstackNote`, or deleted entirely in
+    /// `deleteNote`).
+    private func detachNoteFromStack(_ noteID: UUID) {
+        guard let targetStore = stores.first(where: { $0.note.id == noteID }) else { return }
+
+        if let parentID = targetStore.note.stackParentID {
+            guard let parentStore = stores.first(where: { $0.note.id == parentID }) else { return }
+            targetStore.note.stackParentID = nil
+            parentStore.note.stackedNoteIDs.removeAll(where: { $0 == noteID })
+            parentStore.flush()
+            updateStackStates(for: parentID)
+            showStackIfNoneVisible(parentID: parentID)
+        } else if !targetStore.note.stackedNoteIDs.isEmpty {
+            let remainingChildIDs = targetStore.note.stackedNoteIDs
+            guard let firstChildID = remainingChildIDs.first,
+                  let firstChildStore = stores.first(where: { $0.note.id == firstChildID }) else { return }
+
+            let otherChildIDs = Array(remainingChildIDs.dropFirst())
+            firstChildStore.note.stackedNoteIDs = otherChildIDs
+            firstChildStore.note.stackParentID = nil
+            for childID in otherChildIDs {
+                if let childStore = stores.first(where: { $0.note.id == childID }) {
+                    childStore.note.stackParentID = firstChildID
+                    childStore.flush()
+                }
+            }
+
+            targetStore.note.stackedNoteIDs.removeAll()
+            firstChildStore.flush()
+            updateStackStates(for: firstChildID)
+            showStackIfNoneVisible(parentID: firstChildID)
+        }
+    }
+
+    private func showStackIfNoneVisible(parentID: UUID) {
+        guard let parentStore = stores.first(where: { $0.note.id == parentID }) else { return }
+        let allIDs = [parentID] + parentStore.note.stackedNoteIDs
+        let hasVisible = allIDs.contains { noteWindowControllers[$0]?.isWindowVisible == true }
+        if !hasVisible {
+            noteWindowControllers[parentID]?.show(forceVisible: true, resetManualHidden: true, animateAppearance: false)
+        }
+    }
+
+    private func updateStackStates(for parentID: UUID) {
+        guard let parentStore = stores.first(where: { $0.note.id == parentID }) else { return }
+        let allIDs = [parentID] + parentStore.note.stackedNoteIDs
+        let count = allIDs.count
+        
+        for (index, id) in allIDs.enumerated() {
+            if let store = stores.first(where: { $0.note.id == id }) {
+                if count > 1 {
+                    store.stackIndex = index
+                    store.stackCount = count
+                } else {
+                    store.stackIndex = nil
+                    store.stackCount = nil
+                }
+            }
+        }
+    }
+
+    func navigateStack(from parentID: UUID, delta: Int) {
+        guard let parentStore = stores.first(where: { $0.note.id == parentID }) else { return }
+        let allIDs = [parentID] + parentStore.note.stackedNoteIDs
+        guard allIDs.count > 1 else { return }
+        
+        let visibleID = allIDs.first { noteWindowControllers[$0]?.isWindowVisible == true } ?? parentID
+        guard let visibleIndex = allIDs.firstIndex(of: visibleID) else { return }
+        
+        let newIndex = (visibleIndex + delta + allIDs.count) % allIDs.count
+        let newVisibleID = allIDs[newIndex]
+        
+        if visibleID != newVisibleID {
+            if let oldStore = stores.first(where: { $0.note.id == visibleID }),
+               let newStore = stores.first(where: { $0.note.id == newVisibleID }) {
+                newStore.note.expandedFrame = oldStore.note.expandedFrame
+            }
+            noteWindowControllers[visibleID]?.hide()
+            noteWindowControllers[newVisibleID]?.show(forceVisible: true, resetManualHidden: true, animateAppearance: false)
+        }
+    }
+    
+    private func syncStackFrames(from sourceID: UUID) {
+        guard let sourceStore = stores.first(where: { $0.note.id == sourceID }) else { return }
+        let parentID = sourceStore.note.stackParentID ?? sourceID
+        guard let parentStore = stores.first(where: { $0.note.id == parentID }) else { return }
+        
+        let allIDs = [parentID] + parentStore.note.stackedNoteIDs
+        let frame = sourceStore.note.expandedFrame
+        
+        for id in allIDs {
+            if id != sourceID, let store = stores.first(where: { $0.note.id == id }) {
+                store.note.expandedFrame = frame
+            }
+        }
+    }
+
     private func deleteNote(id: UUID) {
+        detachNoteFromStack(id)
         noteWindowControllers[id]?.close(animated: true)
         noteWindowControllers[id] = nil
         noteSelectionState.remove(id)
@@ -611,13 +861,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         noteSelectionState.prune(activeNoteIDs: Set(stores.map(\.note.id)))
         show(store: restoredStore, forceVisible: restoredStore.note.displayMode == .always || isShowingAllNotesUntilAppSwitch)
         updateNoteListWindowContent()
-        NSApp.activate()
+        if #available(macOS 14.0, *) {
+            NSApp.activate()
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+        }
     }
 
     private func showListedNote(_ store: NoteStore) {
         guard stores.contains(where: { $0.note.id == store.note.id }) else { return }
         show(store: store, forceVisible: true)
-        NSApp.activate()
+        if #available(macOS 14.0, *) {
+            NSApp.activate()
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+        }
     }
 
     private func attachListedNote(_ store: NoteStore, to application: RunningApplicationInfo?) {
@@ -896,13 +1154,44 @@ private extension AppDelegate {
     func installKeyMonitor() {
         localKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self else { return event }
-            return self.handleStatusShortcut(event) ? nil : event
+            return self.handleStatusShortcut(event, requireFrontmost: false) ? nil : event
         }
         globalKeyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
             Task { @MainActor in
                 _ = self?.handleStatusShortcut(event)
             }
         }
+    }
+
+    func installMagnifyHoverMonitor() {
+        localMagnifyMonitor = NSEvent.addLocalMonitorForEvents(matching: .magnify) { [weak self] event in
+            guard let self else { return event }
+            return self.routeMagnifyToHoveredNote(event) ? nil : event
+        }
+        globalMagnifyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .magnify) { [weak self] event in
+            Task { @MainActor in
+                _ = self?.routeMagnifyToHoveredNote(event)
+            }
+        }
+    }
+
+    func routeMagnifyToHoveredNote(_ event: NSEvent) -> Bool {
+        let mouseLocation = NSEvent.mouseLocation
+        guard let controller = hoveredNoteController(at: mouseLocation) else { return false }
+        controller.handleHoverMagnify(event)
+        return true
+    }
+
+    func hoveredNoteController(at screenPoint: CGPoint) -> NoteWindowController? {
+        for window in NSApp.orderedWindows {
+            guard let controller = noteWindowControllers.values.first(where: {
+                $0.windowNumber == window.windowNumber && $0.containsScreenPoint(screenPoint)
+            }) else {
+                continue
+            }
+            return controller
+        }
+        return noteWindowControllers.values.first { $0.containsScreenPoint(screenPoint) }
     }
 
     func registerGlobalNewNoteHotKey() {
@@ -979,9 +1268,20 @@ private extension AppDelegate {
         NSEvent.mouseLocation
     }
 
-    func handleStatusShortcut(_ event: NSEvent) -> Bool {
-        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == ProcessInfo.processInfo.processIdentifier else {
-            return false
+    func handleStatusShortcut(_ event: NSEvent, requireFrontmost: Bool = true) -> Bool {
+        // The frontmost-app check exists to stop the *global* monitor from
+        // stealing keystrokes meant for some unrelated app. It shouldn't
+        // apply to the *local* monitor: since `.nonactivatingPanel` lets a
+        // note become the key window (and legitimately receive its
+        // keystrokes) without making PinSticky "frontmost" in
+        // NSWorkspace's bookkeeping, this guard was rejecting shortcuts
+        // like Cmd+T typed while working in a note whenever another app
+        // still counted as frontmost - even though the local monitor only
+        // ever sees events already routed to our own key window.
+        if requireFrontmost {
+            guard NSWorkspace.shared.frontmostApplication?.processIdentifier == ProcessInfo.processInfo.processIdentifier else {
+                return false
+            }
         }
 
         switch AppShortcutAction.matching(event) {
