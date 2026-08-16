@@ -866,7 +866,6 @@ enum PinStickyShortcutKey {
     case selectNote
     case collapseExpand
     case nextTheme
-    case reset
     case closeNote
     case settings
     case quit
@@ -902,7 +901,6 @@ extension NSEvent {
         case 1: .showAll
         case 2: .collapseExpand
         case 17: .nextTheme
-        case 15: .reset
         case 13: .closeNote
         case 43: .settings
         case 12: .quit

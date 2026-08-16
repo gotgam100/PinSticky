@@ -33,7 +33,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var globalMagnifyMonitor: Any?
     private var globalNewNoteHotKeyRef: EventHotKeyRef?
     private var globalNewNoteHotKeyHandler: EventHandlerRef?
-    private var isGlobalNewNoteHotKeyRegistered = false
     private var windowVisibilityTimer: Timer?
     private var lastExternalFrontmostBundleIdentifier: String?
     private var lastExternalFrontmostPID: pid_t?
@@ -1249,7 +1248,9 @@ private extension AppDelegate {
             &globalNewNoteHotKeyRef
         )
 
-        isGlobalNewNoteHotKeyRegistered = hotKeyStatus == noErr
+        if hotKeyStatus != noErr {
+            unregisterGlobalNewNoteHotKey()
+        }
     }
 
     func unregisterGlobalNewNoteHotKey() {
@@ -1261,7 +1262,6 @@ private extension AppDelegate {
             RemoveEventHandler(globalNewNoteHotKeyHandler)
             self.globalNewNoteHotKeyHandler = nil
         }
-        isGlobalNewNoteHotKeyRegistered = false
     }
 
     func currentMouseLocation() -> CGPoint {
@@ -1286,7 +1286,7 @@ private extension AppDelegate {
 
         switch AppShortcutAction.matching(event) {
         case .newNote:
-            newNote()
+            globalNewNote()
         case .noteList:
             showNoteList()
         case .showAll:

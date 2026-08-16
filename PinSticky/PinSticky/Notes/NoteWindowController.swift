@@ -81,22 +81,14 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
             if isCommandPressed {
                 self.toggleSelected()
             }
-            self.hasDraggedSinceMouseDown = false
-            self.wasCommandPressedOnMouseDown = isCommandPressed
             self.selectAndBringToFront()
             self.window.makeKeyAndOrderFront(nil)
-        }
-        window.noteMouseDraggedHandler = { [weak self] _ in
-            self?.hasDraggedSinceMouseDown = true
         }
         window.noteWindowResizedHandler = { [weak self] sizeDelta, originDelta in
             guard let self else { return }
             if self.selectionState.isSelected(self.store.note.id) {
                 self.resizeSelectedNotes?(sizeDelta, originDelta, self.store.note.id)
             }
-        }
-        window.noteMouseUpHandler = {
-            // Selection is now strictly manual. No auto-deselect on mouse up.
         }
         window.collapsedClickHandler = { [weak self] in
             self?.toggleCollapsed()
@@ -271,9 +263,6 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
         )
     }
 
-    private var hasDraggedSinceMouseDown = false
-    private var wasCommandPressedOnMouseDown = false
-
     /// Applies the same size *and* origin change a selected sibling just
     /// underwent, instead of forcing this window to some absolute size
     /// while keeping its own origin fixed - the latter ignores which edge
@@ -379,7 +368,7 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
             let applyDotContent: @MainActor @Sendable () -> Void = { [weak self] in
                 guard let self else { return }
                 self.window.applyCollapsedStyle()
-                self.window.contentView = ClearHostingView(allowsTransparentTopHitTesting: true, rootView: DotView(
+                self.window.contentView = ClearHostingView(rootView: DotView(
                     store: self.store,
                     overlapState: self.overlapState,
                     expand: { [weak self] in
@@ -404,7 +393,7 @@ final class NoteWindowController: NSObject, NSWindowDelegate {
             window.applyExpandedStyle()
             window.applyLevel(for: store.note.displayMode)
             setFrame(Self.windowFrame(forNoteFrame: frame), animated: animated)
-            window.contentView = ClearHostingView(allowsTransparentTopHitTesting: false, rootView: NoteView(
+            window.contentView = ClearHostingView(rootView: NoteView(
                 store: store,
                 overlapState: overlapState,
                 selectionState: selectionState,
@@ -835,17 +824,9 @@ private struct PresentationSnapshot: Equatable {
 }
 
 private final class ClearHostingView<Content: View>: NSHostingView<Content> {
-    private let allowsTransparentTopHitTesting: Bool
     private var hoverTrackingArea: NSTrackingArea?
 
     required init(rootView: Content) {
-        self.allowsTransparentTopHitTesting = true
-        super.init(rootView: rootView)
-        configureClearLayer()
-    }
-
-    init(allowsTransparentTopHitTesting: Bool = true, rootView: Content) {
-        self.allowsTransparentTopHitTesting = allowsTransparentTopHitTesting
         super.init(rootView: rootView)
         configureClearLayer()
     }
@@ -919,16 +900,5 @@ private final class ClearHostingView<Content: View>: NSHostingView<Content> {
     }
 
     override func draw(_ dirtyRect: NSRect) {}
-
-    private var toolbarHitFrame: NSRect {
-        let width: CGFloat = 252
-        let height = NoteView.toolbarHeight
-        return NSRect(
-            x: max(0, bounds.width - width),
-            y: max(0, bounds.height - height),
-            width: min(width, bounds.width),
-            height: height
-        )
-    }
 
 }

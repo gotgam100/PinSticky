@@ -3,8 +3,6 @@ import ObjectiveC
 
 final class StickerNoteWindow: NSPanel {
     var noteMouseDownHandler: ((Bool) -> Void)?
-    var noteMouseUpHandler: (() -> Void)?
-    var noteMouseDraggedHandler: ((CGPoint) -> Void)?
     /// Called with (sizeDelta, originDelta) whenever the window's own
     /// resize (from any edge/corner) actually changes its size. Both
     /// deltas matter, not just the resulting size: resizing from the left
@@ -56,25 +54,9 @@ final class StickerNoteWindow: NSPanel {
         let sizeDelta = CGSize(width: frameRect.width - frame.width, height: frameRect.height - frame.height)
         super.setFrame(frameRect, display: flag)
         if !isProgrammaticallyMoving {
-            if originDelta.x != 0 || originDelta.y != 0 {
-                noteMouseDraggedHandler?(originDelta)
-            }
             if sizeDelta.width != 0 || sizeDelta.height != 0 {
                 noteWindowResizedHandler?(sizeDelta, originDelta)
             }
-        }
-    }
-
-    override func setFrameOrigin(_ newOrigin: NSPoint) {
-        guard !isAnimationProxy else {
-            super.setFrameOrigin(newOrigin)
-            return
-        }
-
-        let originDelta = CGPoint(x: newOrigin.x - frame.origin.x, y: newOrigin.y - frame.origin.y)
-        super.setFrameOrigin(newOrigin)
-        if !isProgrammaticallyMoving && (originDelta.x != 0 || originDelta.y != 0) {
-            noteMouseDraggedHandler?(originDelta)
         }
     }
 
@@ -130,7 +112,6 @@ final class StickerNoteWindow: NSPanel {
                 suppressesBackgroundMoveForResize = false
                 isMovableByWindowBackground = true
             }
-            noteMouseUpHandler?()
         }
     }
 

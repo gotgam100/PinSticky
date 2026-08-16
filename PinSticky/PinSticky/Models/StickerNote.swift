@@ -197,7 +197,8 @@ struct AppShortcut: Codable, Equatable {
 
     func matches(_ event: NSEvent) -> Bool {
         guard isValid, event.keyCode == keyCode else { return false }
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        var flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        flags.remove(.capsLock)
         var expected: NSEvent.ModifierFlags = []
         if usesCommand { expected.insert(.command) }
         if usesOption { expected.insert(.option) }
